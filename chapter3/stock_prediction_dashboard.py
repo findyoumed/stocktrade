@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# [LOG: 20260604_1309]
+# [LOG: 20260604_1323]
 
 # 1. 종목 이름 조회 함수
 @st.cache_data
@@ -53,7 +53,7 @@ def prepare_features(df):
     y = df['종가'].iloc[1:]
     return X, y
 
-# 4. 머신러닝 롤링 윈도우 예측 수행 함수 (학습 로직 캐싱 추가)
+# 4. 머신러닝 롤링 윈도우 예측 수행 함수
 @st.cache_data
 def run_rolling_forecast(X, y, window_size):
     """매일 이전 window_size일의 데이터를 학습하여 다음 날 종가를 예측합니다. 
@@ -96,31 +96,48 @@ def run_rolling_forecast(X, y, window_size):
     pred_series = pd.Series(predictions, index=prediction_dates)
     return pred_series
 
-# 5. 머신러닝 백테스트 수익률 계산 함수
-def run_ml_backtest(df, pred_series):
+# 5. 머신러닝 백테스트 수익률 계산 함수 (실전 수수료/슬리피지 비용 반영)
+def run_ml_backtest(df, pred_series, initial_budget, fee_rate_pct, slippage_rate_pct):
     """예측 결과를 기반으로 머신러닝 매매 백테스트 수익률을 계산합니다."""
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    
     backtest_df = pd.DataFrame({
         'Actual_Close': df['종가'].loc[pred_series.index],
         'Predicted_Close': pred_series,
         'Prev_Close': df['종가'].shift(1).loc[pred_series.index]
     }).dropna()
     
-    # 매수 신호: 내일 종가 예측치 > 오늘 실제 종가 일 때 매수
     backtest_df['Buy_Signal'] = backtest_df['Predicted_Close'] > backtest_df['Prev_Close']
     
-    # 전략 일별 수익률 계산 (매수 시 당일 실제 종가 / 전일 실제 종가, 미매수 시 1.0)
+    # 이전 영업일 매수 포지션 여부
+    prev_signals = backtest_df['Buy_Signal'].shift(1).fillna(False)
+    
+    # 포지션 변동(진입/청산) 시 거래 비용 차감
+    entry_cost = np.where((backtest_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
+    exit_cost = np.where((backtest_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
+    total_cost = entry_cost + exit_cost
+    
+    # 전략 일별 수익률 계산
     backtest_df['Strategy_Return'] = np.where(
         backtest_df['Buy_Signal'],
-        backtest_df['Actual_Close'] / backtest_df['Prev_Close'],
-        1.0
+        (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) - total_cost,
+        1.0 - total_cost
     )
     
-    # 단순 보유(Buy & Hold) 일별 수익률
-    backtest_df['Hold_Return'] = backtest_df['Actual_Close'] / backtest_df['Prev_Close']
+    # 단순 보유 일별 수익률 (최초 1회 매수 수수료 반영)
+    hold_returns = backtest_df['Actual_Close'] / backtest_df['Prev_Close']
+    hold_returns_array = hold_returns.values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    backtest_df['Hold_Return'] = hold_returns_array
     
     # 누적 수익률 계산 (%)
     backtest_df['Strategy_Cum_Return'] = (backtest_df['Strategy_Return'].cumprod() - 1) * 100
     backtest_df['Hold_Cum_Return'] = (backtest_df['Hold_Return'].cumprod() - 1) * 100
+    
+    # 최종 잔고 계산 (원)
+    backtest_df['Strategy_Balance'] = initial_budget * backtest_df['Strategy_Return'].cumprod()
+    backtest_df['Hold_Balance'] = initial_budget * backtest_df['Hold_Return'].cumprod()
     
     return backtest_df
 
@@ -154,9 +171,14 @@ def calculate_ml_monthly_stats(actual, predicted, backtest_df):
     stats_df = pd.merge(stats_df, monthly_return, on='년-월')
     return stats_df
 
-# 7. 변동성 돌파 전략 백테스트 계산 함수
-def run_vbt_backtest(df, K):
-    """변동성 돌파 전략 백테스트를 수행합니다."""
+# 7. 변동성 돌파 전략 백테스트 계산 함수 (실전 수수료/슬리피지 비용 반영)
+def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct):
+    """변동성 돌파 전략 백테스트를 수행합니다. 
+    매일 당일 진입 후 당일 청산하므로 신호 발생 시 왕복(2회) 거래 비용이 차감됩니다.
+    """
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    round_trip_cost = 2 * cost_rate
+    
     vbt_df = df.copy()
     
     # 변동성 폭 계산 (전일 고가 - 전일 저가)
@@ -168,20 +190,28 @@ def run_vbt_backtest(df, K):
     # 매수 조건: 당일 고가가 매수 목표가를 초과했는지 판별
     vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
     
-    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 매수 목표가, 미체결 시 1.0)
+    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 매수 목표가 - 왕복 비용, 미체결 시 1.0)
     vbt_df['Strategy_Return'] = np.where(
         vbt_df['Buy_Signal'],
-        vbt_df['종가'] / vbt_df['Buy_Target'],
+        (vbt_df['종가'] / vbt_df['Buy_Target']) - round_trip_cost,
         1.0
     )
     
-    # 단순 보유(Buy & Hold) 일별 수익률
-    vbt_df['Hold_Return'] = vbt_df['종가'] / vbt_df['종가'].shift(1)
-    vbt_df['Hold_Return'] = vbt_df['Hold_Return'].fillna(1.0)
+    # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영)
+    hold_returns = vbt_df['종가'] / vbt_df['종가'].shift(1)
+    hold_returns = hold_returns.fillna(1.0)
+    hold_returns_array = hold_returns.values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    vbt_df['Hold_Return'] = hold_returns_array
     
     # 누적 수익률 계산 (%)
     vbt_df['Strategy_Cum_Return'] = (vbt_df['Strategy_Return'].cumprod() - 1) * 100
     vbt_df['Hold_Cum_Return'] = (vbt_df['Hold_Return'].cumprod() - 1) * 100
+    
+    # 최종 잔고 계산 (원)
+    vbt_df['Strategy_Balance'] = initial_budget * vbt_df['Strategy_Return'].cumprod()
+    vbt_df['Hold_Balance'] = initial_budget * vbt_df['Hold_Return'].cumprod()
     
     # 일별 수익률 변동 (%)
     vbt_df['Daily_Return_Pct'] = (vbt_df['Strategy_Return'] - 1) * 100
@@ -277,11 +307,24 @@ ticker_code = st.sidebar.text_input("종목 코드 입력 (6자리)", "360750")
 ticker_name = get_ticker_name(ticker_code)
 st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_code})")
 
-# 3. 공통 기간 설정
-start_date = st.sidebar.text_input("시작 날짜 (YYYYMMDD)", "20240101")
-end_date = st.sidebar.text_input("종료 날짜 (YYYYMMDD)", "20251231")
+# 🚀 백테스트 실행 버튼 위치를 상단(종목 코드 바로 아래, 시작 날짜 위)으로 이동
+if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True):
+    st.session_state['run_backtest'] = True
 
-# 4. 전략별 개별 설정
+# 3. 공통 기간 설정 (종료 날짜 기본값을 실행 당일 오늘 날짜로 동적 자동 입력)
+start_date = st.sidebar.text_input("시작 날짜 (YYYYMMDD)", "20240101")
+today_str = datetime.today().strftime('%Y%m%d')
+end_date = st.sidebar.text_input("종료 날짜 (YYYYMMDD)", today_str)
+
+# 4. 실전 투자 조건 설정 (사용자가 쉼표 없이 숫자만 편리하게 타이핑하여 입력하도록 원복)
+st.sidebar.subheader("💸 실전 투자 조건 (거래비용)")
+initial_budget = st.sidebar.number_input("💵 초기 투자 원금 (원)", min_value=100000, value=10000000, step=1000000, format="%d")
+
+fee_rate = st.sidebar.number_input("💸 거래 수수료율 (편도, %)", min_value=0.0, max_value=1.0, value=0.015, step=0.005, format="%.3f")
+slippage_rate = st.sidebar.number_input("📉 슬리피지율 (편도, %)", min_value=0.0, max_value=1.0, value=0.02, step=0.01, format="%.2f")
+
+# 5. 전략별 개별 설정
+st.sidebar.subheader("🎯 전략 파라미터")
 if strategy_choice == "머신러닝 롤링 예측 전략":
     window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
     K = 0.5 # 미사용 기본값
@@ -325,10 +368,6 @@ if not is_data_cached:
 
 df = st.session_state['stock_data']
 
-# 백테스트 실행 버튼
-if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True):
-    st.session_state['run_backtest'] = True
-
 # 백테스트 연산 및 시각화 출력 (데이터가 성공적으로 있는 경우에만 기동)
 if not df.empty:
     if st.session_state.get('run_backtest', False):
@@ -343,20 +382,24 @@ if not df.empty:
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size)
                 actual_close = df['종가'].loc[pred_series.index]
-                ml_df = run_ml_backtest(df, pred_series)
+                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
                 
                 # 평가 지표
                 mae = (actual_close - pred_series).abs().mean()
                 mape = ((actual_close - pred_series).abs() / actual_close).mean() * 100
                 strategy_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = ml_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = ml_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = ml_df['Hold_Balance'].iloc[-1]
                 total_days = len(pred_series)
                 
             # 변동성 돌파 모드 연산
             elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
-                vbt_df = run_vbt_backtest(df, K)
+                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
                 strategy_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = vbt_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = vbt_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = vbt_df['Hold_Balance'].iloc[-1]
                 total_buys = np.sum(vbt_df['Buy_Signal'])
                 total_days = len(vbt_df)
                 
@@ -365,15 +408,19 @@ if not df.empty:
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size)
                 actual_close = df['종가'].loc[pred_series.index]
-                ml_df = run_ml_backtest(df, pred_series)
+                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
                 
                 # 변동성 돌파도 머신러닝 예측 기간과 정확히 일치시켜 1대1 비교
-                vbt_full = run_vbt_backtest(df, K)
+                vbt_full = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
                 vbt_df = vbt_full.loc[pred_series.index]
                 
                 ml_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
                 vbt_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = ml_df['Hold_Cum_Return'].iloc[-1]
+                
+                ml_final_balance = ml_df['Strategy_Balance'].iloc[-1]
+                vbt_final_balance = vbt_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = ml_df['Hold_Balance'].iloc[-1]
                 mae = (actual_close - pred_series).abs().mean()
                 
             # --- 구조 1: 성과 지표 (Metrics 4개) ---
@@ -381,9 +428,9 @@ if not df.empty:
             
             if strategy_choice == "머신러닝 롤링 예측 전략":
                 with col1:
-                    st.metric(label="🤖 머신러닝 전략 누적 수익률", value=f"{strategy_final_return:.2f} %", delta=f"보유 대비: {strategy_final_return - hold_final_return:+.2f}%")
+                    st.metric(label="🤖 머신러닝 최종 잔고 (수익률)", value=f"{strategy_final_balance:,.0f} 원", delta=f"{strategy_final_return:+.2f}%")
                 with col2:
-                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                    st.metric(label="📈 단순 보유 최종 잔고 (수익률)", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col3:
                     st.metric(label="📊 평균 절대 오차 (MAE)", value=f"{mae:,.0f} 원", delta=f"오차율(MAPE): {mape:.2f}%", delta_color="inverse")
                 with col4:
@@ -391,9 +438,9 @@ if not df.empty:
                     
             elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
                 with col1:
-                    st.metric(label="⚡ 변동성 돌파 전략 누적 수익률", value=f"{strategy_final_return:.2f} %", delta=f"보유 대비: {strategy_final_return - hold_final_return:+.2f}%")
+                    st.metric(label="⚡ 변동성 돌파 최종 잔고 (수익률)", value=f"{strategy_final_balance:,.0f} 원", delta=f"{strategy_final_return:+.2f}%")
                 with col2:
-                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                    st.metric(label="📈 단순 보유 최종 잔고 (수익률)", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col3:
                     st.metric(label="🛒 총 매수 체결 횟수", value=f"{total_buys} 회", delta=f"체결률: {(total_buys/total_days)*100:.1f}%")
                 with col4:
@@ -401,11 +448,11 @@ if not df.empty:
                     
             else: # 통합 비교 모드
                 with col1:
-                    st.metric(label="🤖 머신러닝 전략 수익률", value=f"{ml_final_return:.2f} %", delta=f"보유 대비 {ml_final_return - hold_final_return:+.2f}%")
+                    st.metric(label="🤖 머신러닝 최종 잔고", value=f"{ml_final_balance:,.0f} 원", delta=f"{ml_final_return:+.2f}%")
                 with col2:
-                    st.metric(label="⚡ 변동성 돌파 전략 수익률", value=f"{vbt_final_return:.2f} %", delta=f"보유 대비 {vbt_final_return - hold_final_return:+.2f}%")
+                    st.metric(label="⚡ 변동성 돌파 최종 잔고", value=f"{vbt_final_balance:,.0f} 원", delta=f"{vbt_final_return:+.2f}%")
                 with col3:
-                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                    st.metric(label="📈 단순 보유 최종 잔고", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col4:
                     st.metric(label="🎯 머신러닝 평균 오차 (MAE)", value=f"{mae:,.0f} 원")
 
