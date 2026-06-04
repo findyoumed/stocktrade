@@ -18,6 +18,14 @@ KOREAN_TICKER_ALIASES = {
     "삼성전자": "005930",
     "samsungelectronics": "005930",
     "samsungelec": "005930",
+    "네이버": "035420",
+    "naver": "035420",
+    "카카오": "035720",
+    "kakao": "035720",
+    "현대차": "005380",
+    "hyundai": "005380",
+    "기아": "000270",
+    "kia": "000270",
 }
 LOCAL_TICKER_CATALOG = {
     "005930": {"name": "삼성전자", "aliases": ["Samsung Electronics", "SamsungElec"]},
@@ -63,23 +71,52 @@ def normalize_search_text(value):
 
 
 def resolve_ticker_input(ticker_input):
-    """회사명/별칭 입력을 실제 조회용 종목코드로 변환합니다."""
+    """회사명/별칭/영문 공식명을 실제 조회용 종목코드로 변환합니다. 수동 별칭 매칭 후 실시간 DB 완전/부분 매칭을 수행합니다."""
+    if not ticker_input:
+        return ""
+    
+    # 1. 수동 별칭 사전을 활용한 빠른 조회
     key = normalize_search_text(ticker_input)
-    return KOREAN_TICKER_ALIASES.get(key, ticker_input.strip())
+    if key in KOREAN_TICKER_ALIASES:
+        return KOREAN_TICKER_ALIASES[key]
+
+    # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
+    listed_df = get_all_listed_stocks()
+    if not listed_df.empty:
+        target_name = ticker_input.strip().lower().replace(" ", "")
+        
+        # 완전 일치 조회
+        matched_rows = listed_df[listed_df['name'].str.lower().str.replace(" ", "") == target_name]
+        if not matched_rows.empty:
+            return matched_rows.iloc[0]['ticker']
+            
+        # 부분 일치 조회 (가장 짧은 이름 우선 매칭)
+        matched_part = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(target_name, na=False)]
+        if not matched_part.empty:
+            matched_part = matched_part.copy()
+            matched_part['name_len'] = matched_part['name'].str.len()
+            matched_part = matched_part.sort_values(by='name_len')
+            return matched_part.iloc[0]['ticker']
+
+    # 3. 매칭 실패 시 입력값 그대로 반환
+    return ticker_input.strip()
 
 # [LOG: 20260604_1508]
-# 실시간 KIND 및 Naver ETF API를 활용한 전 상장사 및 ETF 통합 로딩 및 캐싱 기능 도입
+# 실시간 KIND 및 Naver ETF API를 활용한 전 상장사 및 ETF 통합 로딩 및 캐싱 기능 도입 (로컬 CSV 백업 Fallback 지원)
 @st.cache_data(ttl=86400)
 def get_all_listed_stocks():
     """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록 및 네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
-    네트워크 장애 시 빈 DataFrame을 반환하여 로컬 백업 카탈로그로 유연하게 복원됩니다.
+    네트워크 장애 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
     """
     import requests
     from io import BytesIO
     
+    backup_path = Path(__file__).parent / "listed_stocks_backup.csv"
+    df_stocks = pd.DataFrame()
+    df_etfs = pd.DataFrame()
+    
     # 1. KIND 일반 상장 주식 로드
     url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
-    df_stocks = pd.DataFrame()
     try:
         res = requests.get(url_kind, timeout=5)
         df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
@@ -91,7 +128,6 @@ def get_all_listed_stocks():
 
     # 2. 네이버 금융 ETF 목록 로드 (배당plus, 고배당, S&P500 등 ETF 검색 지원)
     url_etf = 'https://finance.naver.com/api/sise/etfItemList.nhn'
-    df_etfs = pd.DataFrame()
     try:
         res = requests.get(url_etf, timeout=5)
         data = res.json()
@@ -108,14 +144,33 @@ def get_all_listed_stocks():
         pass
 
     # 3. 주식 및 ETF 병합
-    if df_stocks.empty and df_etfs.empty:
-        return pd.DataFrame()
-    elif df_stocks.empty:
-        return df_etfs
-    elif df_etfs.empty:
-        return df_stocks
-    else:
-        return pd.concat([df_stocks, df_etfs], ignore_index=True)
+    df_merged = pd.DataFrame()
+    if not df_stocks.empty or not df_etfs.empty:
+        if df_stocks.empty:
+            df_merged = df_etfs
+        elif df_etfs.empty:
+            df_merged = df_stocks
+        else:
+            df_merged = pd.concat([df_stocks, df_etfs], ignore_index=True)
+
+    # 4. 성공적으로 가져왔다면 로컬 백업 파일 갱신
+    if not df_merged.empty:
+        try:
+            df_merged.to_csv(backup_path, index=False, encoding='utf-8-sig')
+        except Exception:
+            pass
+        return df_merged
+
+    # 5. 네트워크 에러로 둘 다 실패 시 로컬 백업 파일 로드 시도
+    if backup_path.exists():
+        try:
+            df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+            df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
+            return df_backup
+        except Exception:
+            pass
+
+    return pd.DataFrame()
 
 
 def search_local_tickers(query):
@@ -124,27 +179,46 @@ def search_local_tickers(query):
     if not key:
         return []
 
+    # 한글과 영문/숫자가 붙어있는 경우(예: '배당plus')를 대비하여 토큰 단위 분리 AND 검색 지원
+    import re
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
+    if not tokens:
+        tokens = [key.lower()]
+
     matches = []
     
     # 1. 정적 로컬 카탈로그 검색 (ETF 등 수동 캐싱 우선)
     for ticker, item in LOCAL_TICKER_CATALOG.items():
         searchable_values = [ticker, item["name"], *item.get("aliases", [])]
-        normalized_values = [normalize_search_text(value) for value in searchable_values]
-        if any(key == value for value in normalized_values):
+        normalized_values = [normalize_search_text(value).lower() for value in searchable_values]
+        
+        # 완전 일치 항목이 있다면 즉시 최우선 반환
+        if any(key.lower() == value for value in normalized_values):
             return [{"ticker": ticker, "name": item["name"]}]
-        if any(key in value for value in normalized_values):
-            matches.append({"ticker": ticker, "name": item["name"]})
+            
+        # 모든 토큰이 단어 내에 포함되는지 체크
+        for val in normalized_values:
+            if all(token in val for token in tokens):
+                matches.append({"ticker": ticker, "name": item["name"]})
+                break
 
-    # 2. KIND + Naver ETF 통합 목록 실시간 검색
+    # 2. KIND + Naver ETF 통합 목록 실시간 검색 (AND 토큰 검색)
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        # 회사명/ETF명을 대소문자 구분 없이, 공백 제거 후 부분 매칭
-        filtered = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(key, na=False)]
+        def match_tokens(name_str):
+            if not isinstance(name_str, str):
+                return False
+            name_lower = name_str.lower().replace(" ", "")
+            return all(token in name_lower for token in tokens)
+
+        filtered = listed_df[listed_df['name'].apply(match_tokens)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
             if not any(m['ticker'] == ticker for m in matches):
                 matches.append({"ticker": ticker, "name": name})
+    # 3. 정렬 순서 최적화: 이름이 짧은 순(메인 대표 종목 우선) -> 가나다(알파벳) 오름차순
+    matches = sorted(matches, key=lambda x: (len(x['name']), x['name']))
 
     return matches
 
@@ -155,8 +229,10 @@ def get_ticker_name(ticker_code):
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
     
-    # 영문 티커 기호(미국 주식)이거나 6자리 숫자 종목코드(한국 주식)가 아니면 즉시 차단 (한글 검색어 패스 방지)
-    if not (ticker_code.isalnum() and (ticker_code.isalpha() or (len(ticker_code) == 6 and ticker_code.isdigit()))):
+    # 영문 티커 기호(미국 주식)는 오직 ASCII 알파벳이어야 하고, 한국 주식은 6자리 숫자여야 합니다. (한글 검색어 패스 차단)
+    is_valid_us_ticker = ticker_code.isascii() and ticker_code.isalpha()
+    is_valid_kr_ticker = len(ticker_code) == 6 and ticker_code.isdigit()
+    if not (is_valid_us_ticker or is_valid_kr_ticker):
         return UNKNOWN_TICKER_NAME
     
     if ticker_code in LOCAL_TICKER_CATALOG:
