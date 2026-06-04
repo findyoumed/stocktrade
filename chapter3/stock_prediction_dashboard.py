@@ -7,12 +7,26 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# [LOG: 20260604_1241]
+# [LOG: 20260604_1307]
 
 # 1. 종목 이름 조회 함수
 @st.cache_data
 def get_ticker_name(ticker_code):
     """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자)"""
+    etf_map = {
+        "360750": "TIGER 미국S&P500",
+        "379800": "KODEX 미국S&P500TR",
+        "365000": "ACE 미국S&P500",
+        "314250": "KODEX 미국나스닥100TR",
+        "133690": "TIGER 미국나스닥100",
+        "252670": "KODEX 200선물인버스2X",
+        "114800": "KODEX 인버스",
+        "122630": "KODEX 레버리지"
+    }
+    
+    if ticker_code in etf_map:
+        return etf_map[ticker_code]
+        
     try:
         name = stock.get_market_ticker_name(ticker_code)
         if name == "":
@@ -71,7 +85,7 @@ def run_rolling_forecast(X, y, df_index, window_size):
         # 프로그레스바 업데이트
         current_step = i - window_size + 1
         progress_bar.progress(current_step / total_steps)
-        status_text.text(f"예측 진행 중: {current_step}/{total_steps} 영업일 완료...")
+        status_text.text(f"머신러닝 예측 진행 중: {current_step}/{total_steps} 영업일 완료...")
         
     progress_bar.empty()
     status_text.empty()
@@ -109,7 +123,7 @@ def run_ml_backtest(df, pred_series):
 
 # 6. 머신러닝 월별 백테스트 통계 계산 함수
 def calculate_ml_monthly_stats(actual, predicted, backtest_df):
-    """실제 값과 예측 값을 비교하여 머신러닝 예측 오차 및 월별 수익률 통계를 계산합니다."""
+    """머신러닝 예측 오차 및 월별 수익률 통계를 계산합니다."""
     compare_df = pd.DataFrame({
         'Actual': actual,
         'Predicted': predicted,
@@ -191,8 +205,41 @@ def calculate_vbt_monthly_stats(vbt_df):
     summary.columns = ['년-월', '매수 횟수 (회)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
     return summary
 
+# 9. 두 전략 월별 백테스트 요약 통계 계산 함수
+def calculate_combined_monthly_stats(ml_df, vbt_df):
+    """두 전략의 월별 수익률 및 머신러닝 오차율을 하나의 표로 통합하여 요약합니다."""
+    # 1. 머신러닝 월별 요약
+    ml_df['YearMonth'] = ml_df.index.strftime('%Y-%m')
+    ml_df['Absolute Error'] = (ml_df['Actual_Close'] - ml_df['Predicted_Close']).abs()
+    
+    ml_summary = ml_df.groupby('YearMonth').agg({
+        'Absolute Error': 'mean',
+        'Strategy_Return': 'prod'
+    }).reset_index()
+    ml_summary.columns = ['년-월', '머신러닝 오차 (원)', 'ML_Return_Prod']
+    
+    # 2. 변동성 돌파 월별 요약
+    vbt_df['YearMonth'] = vbt_df.index.strftime('%Y-%m')
+    vbt_df['Buy_Count'] = np.where(vbt_df['Buy_Signal'], 1, 0)
+    
+    vbt_summary = vbt_df.groupby('YearMonth').agg({
+        'Buy_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }).reset_index()
+    vbt_summary.columns = ['년-월', '돌파 매수 횟수 (회)', 'VBT_Return_Prod', 'Hold_Return_Prod']
+    
+    # 3. 데이터 결합 및 백분율 변환
+    merged = pd.merge(ml_summary, vbt_summary, on='년-월')
+    merged['머신러닝 수익률 (%)'] = (merged['ML_Return_Prod'] - 1) * 100
+    merged['변동성 돌파 수익률 (%)'] = (merged['VBT_Return_Prod'] - 1) * 100
+    merged['단순 보유 수익률 (%)'] = (merged['Hold_Return_Prod'] - 1) * 100
+    
+    final_df = merged[['년-월', '머신러닝 수익률 (%)', '변동성 돌파 수익률 (%)', '단순 보유 수익률 (%)', '돌파 매수 횟수 (회)', '머신러닝 오차 (원)']]
+    return final_df
+
 # --- Streamlit UI 시작 ---
-st.set_page_config(page_title="주식 백테스트 및 예측 대시보드", layout="wide")
+st.set_page_config(page_title="주식 투자 전략 백테스트 종합 비교 대시보드", layout="wide")
 
 # 프리미엄 다크/그레이 톤 스타일링을 위한 마크다운 CSS
 st.markdown("""
@@ -211,266 +258,308 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("📈 주식 투자 전략 시뮬레이터 및 백테스트 대시보드")
-st.write("머신러닝 롤링 예측 및 래리 윌리엄스 변동성 돌파 전략의 성과를 분석하는 인터랙티브 대시보드입니다.")
+st.write("머신러닝 롤링 예측 전략과 래리 윌리엄스 변동성 돌파 전략의 성과를 분석하는 인터랙티브 대시보드입니다.")
 
 # 사이드바 설정
 st.sidebar.header("⚙️ 전략 및 파라미터 설정")
 
-# 1. 라디오 버튼을 사용한 전략 선택
+# 1. 라디오 버튼을 사용하여 전략 및 통합 모드 선택 (3개 옵션 제공)
 strategy_choice = st.sidebar.radio(
     "💡 분석할 전략 선택",
-    options=["머신러닝 롤링 예측 전략", "변동성 돌파 전략 (Larry Williams)"]
+    options=["머신러닝 롤링 예측 전략", "변동성 돌파 전략 (Larry Williams)", "두 전략 통합 비교"]
 )
 
 # 2. 공통 종목 코드 입력
-ticker_code = st.sidebar.text_input("종목 코드 입력 (6자리)", "005930")
+ticker_code = st.sidebar.text_input("종목 코드 입력 (6자리)", "360750")
 ticker_name = get_ticker_name(ticker_code)
 st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_code})")
 
 # 3. 공통 기간 설정
-start_date = st.sidebar.text_input("시작 날짜 (YYYYMMDD)", "20250101")
-end_date = st.sidebar.text_input("종료 날짜 (YYYYMMDD)", "20260531")
+start_date = st.sidebar.text_input("시작 날짜 (YYYYMMDD)", "20240101")
+end_date = st.sidebar.text_input("종료 날짜 (YYYYMMDD)", "20251231")
 
 # 4. 전략별 개별 설정
 if strategy_choice == "머신러닝 롤링 예측 전략":
     window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
     K = 0.5 # 미사용 기본값
-else:
+elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
     K = st.sidebar.slider("변동성 돌파 계수 (K)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
     window_size = 90 # 미사용 기본값
+else:
+    # 통합 비교 모드 시 두 설정 모두 표시
+    window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
+    K = st.sidebar.slider("변동성 돌파 계수 (K)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
 
-# 실행 버튼
-if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True):
-    with st.spinner(f"{ticker_name} 주식 데이터를 불러오는 중..."):
+# --- 세션 상태 초기화 및 관리 ---
+if 'stock_data' not in st.session_state:
+    st.session_state['stock_data'] = pd.DataFrame()
+if 'loaded_ticker' not in st.session_state:
+    st.session_state['loaded_ticker'] = ""
+if 'loaded_start' not in st.session_state:
+    st.session_state['loaded_start'] = ""
+if 'loaded_end' not in st.session_state:
+    st.session_state['loaded_end'] = ""
+
+# 입력된 종목코드나 기간이 이미 세션에 로드된 것과 일치하는지 판별
+is_data_cached = (
+    not st.session_state['stock_data'].empty and
+    st.session_state['loaded_ticker'] == ticker_code and
+    st.session_state['loaded_start'] == start_date and
+    st.session_state['loaded_end'] == end_date
+)
+
+# 데이터 로딩 로직 최적화: 종목이나 기간이 바뀐 최초 1회에만 데이터 로드 스피너가 작동
+if not is_data_cached:
+    with st.spinner(f"📡 {ticker_name} ({ticker_code}) 주식 데이터를 불러오는 중..."):
         df = load_data(start_date, end_date, ticker_code)
-        
-        if df.empty:
-            st.warning("데이터가 부족하거나 불러오지 못했습니다. 날짜 범위 또는 종목 코드를 다시 설정해 주세요.")
+        if not df.empty:
+            st.session_state['stock_data'] = df
+            st.session_state['loaded_ticker'] = ticker_code
+            st.session_state['loaded_start'] = start_date
+            st.session_state['loaded_end'] = end_date
         else:
-            if strategy_choice == "머신러닝 롤링 예측 전략":
-                if len(df) <= window_size:
-                    st.error(f"데이터의 총 크기({len(df)}일)가 학습 윈도우 크기({window_size}일)보다 작습니다. 기간을 늘려주세요.")
-                else:
-                    X, y = prepare_features(df)
-                    
-                    # 롤링 예측 및 백테스트 실행
-                    pred_series = run_rolling_forecast(X, y, df.index, window_size)
-                    actual_close = df['종가'].loc[pred_series.index]
-                    backtest_df = run_ml_backtest(df, pred_series)
-                    
-                    # 지표 계산
-                    mae = (actual_close - pred_series).abs().mean()
-                    mape = ((actual_close - pred_series).abs() / actual_close).mean() * 100
-                    strategy_final_return = backtest_df['Strategy_Cum_Return'].iloc[-1]
-                    hold_final_return = backtest_df['Hold_Cum_Return'].iloc[-1]
-                    
-                    # 성과 지표 출력
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric(label="📊 평균 절대 오차", value=f"{mae:,.0f} 원")
-                    with col2:
-                        st.metric(label="🎯 평균 백분율 오차 (MAPE)", value=f"{mape:.2f} %")
-                    with col3:
-                        st.metric(
-                            label="💰 전략 누적 수익률", 
-                            value=f"{strategy_final_return:.2f} %",
-                            delta=f"단순보유({hold_final_return:.2f}%) 대비: {strategy_final_return - hold_final_return:+.2f}%"
-                        )
-                    with col4:
-                        st.metric(label="⏳ 총 분석 영업일 수", value=f"{len(pred_series)} 일")
-                    
-                    # 실제 vs 예측 비교 차트
-                    st.subheader(f"🔮 실제 {ticker_name} 종가 vs 예측 주가 비교")
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=df.index, 
-                        y=df['종가'], 
-                        name="실제 종가", 
-                        line=dict(color="#1f77b4", width=2),
-                        hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=pred_series.index, 
-                        y=pred_series, 
-                        name="예측 종가 (머신러닝)", 
-                        line=dict(color="#ff7f0e", width=2, dash="dash"),
-                        hovertemplate='<b>예측 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
-                    ))
-                    fig.update_layout(
-                        plot_bgcolor="white",
-                        paper_bgcolor="white",
-                        margin=dict(l=20, r=20, t=30, b=20),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                        yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가 (원)"),
-                        height=400
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 누적 수익률 추이 그래프
-                    st.subheader("📈 백테스트 누적 수익률 비교 추이")
-                    fig_ret = go.Figure()
-                    fig_ret.add_trace(go.Scatter(
-                        x=backtest_df.index, 
-                        y=backtest_df['Strategy_Cum_Return'], 
-                        name="머신러닝 롤링 예측 전략", 
-                        line=dict(color="#2ca02c", width=2.5),
-                        hovertemplate='<b>머신러닝 전략 수익률</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
-                    ))
-                    fig_ret.add_trace(go.Scatter(
-                        x=backtest_df.index, 
-                        y=backtest_df['Hold_Cum_Return'], 
-                        name="단순 보유", 
-                        line=dict(color="#7f7f7f", width=1.5, dash="dot"),
-                        hovertemplate='<b>단순 보유 수익률</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
-                    ))
-                    fig_ret.update_layout(
-                        plot_bgcolor="white",
-                        paper_bgcolor="white",
-                        margin=dict(l=20, r=20, t=30, b=20),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                        yaxis=dict(showgrid=True, gridcolor="#e9ecef", title="누적 수익률 (%)"),
-                        height=400
-                    )
-                    st.plotly_chart(fig_ret, use_container_width=True)
-                    
-                    # 월별 통계 분석
-                    st.subheader(f"📅 월별 예측 오차 및 수익률 분석 요약")
-                    monthly_stats = calculate_ml_monthly_stats(actual_close, pred_series, backtest_df)
-                    
-                    col_chart, col_table = st.columns([2, 1])
-                    with col_chart:
-                        fig_bar = px.bar(
-                            monthly_stats, 
-                            x='년-월', 
-                            y='평균 절대 오차 (원)', 
-                            color='평균 절대 오차 (원)',
-                            color_continuous_scale=px.colors.sequential.OrRd
-                        )
-                        fig_bar.update_traces(
-                            hovertemplate='<b>년-월</b>: %{x}<br><b>평균 절대 오차</b>: %{y:,.0f}원<extra></extra>'
-                        )
-                        fig_bar.update_layout(
-                            plot_bgcolor="white",
-                            paper_bgcolor="white",
-                            xaxis=dict(type='category', title="년-월"),
-                            yaxis=dict(tickformat=",", title="평균 오차 (원)"),
-                            coloraxis_colorbar=dict(title="오차 (원)"),
-                            height=350
-                        )
-                        st.plotly_chart(fig_bar, use_container_width=True)
-                        
-                    with col_table:
-                        st.write("📊 **월별 통계 요약 데이터**")
-                        display_df = monthly_stats.copy()
-                        display_df['평균 절대 오차 (원)'] = display_df['평균 절대 오차 (원)'].map('{:,.0f}원'.format)
-                        display_df['평균 오차율 (%)'] = display_df['평균 오차율 (%)'].map('{:.2f}%'.format)
-                        display_df['월간 수익률 (%)'] = display_df['월간 수익률 (%)'].map('{:+.2f}%'.format)
-                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.session_state['stock_data'] = pd.DataFrame()
+
+df = st.session_state['stock_data']
+
+# 백테스트 실행 버튼
+if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True):
+    st.session_state['run_backtest'] = True
+
+# 백테스트 연산 및 시각화 출력 (데이터가 성공적으로 있는 경우에만 기동)
+if not df.empty:
+    if st.session_state.get('run_backtest', False):
+        # 1. 1차 검증
+        if strategy_choice in ["머신러닝 롤링 예측 전략", "두 전략 통합 비교"] and len(df) <= window_size:
+            st.error(f"데이터의 총 크기({len(df)}일)가 학습 윈도우 크기({window_size}일)보다 작습니다. 기간을 늘려주세요.")
+        else:
+            # --- 백테스트 연산 수행 ---
             
-            else:
-                # 변동성 돌파 전략 실행
-                vbt_df = run_vbt_backtest(df, K)
-                summary_stats = calculate_vbt_monthly_stats(vbt_df)
+            # 머신러닝 모드 연산
+            if strategy_choice == "머신러닝 롤링 예측 전략":
+                X, y = prepare_features(df)
+                pred_series = run_rolling_forecast(X, y, df.index, window_size)
+                actual_close = df['종가'].loc[pred_series.index]
+                ml_df = run_ml_backtest(df, pred_series)
                 
+                # 평가 지표
+                mae = (actual_close - pred_series).abs().mean()
+                mape = ((actual_close - pred_series).abs() / actual_close).mean() * 100
+                strategy_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = ml_df['Hold_Cum_Return'].iloc[-1]
+                total_days = len(pred_series)
+                
+            # 변동성 돌파 모드 연산
+            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                vbt_df = run_vbt_backtest(df, K)
                 strategy_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = vbt_df['Hold_Cum_Return'].iloc[-1]
                 total_buys = np.sum(vbt_df['Buy_Signal'])
                 total_days = len(vbt_df)
                 
-                # 성과 지표 출력
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric(label="💰 전략 최종 누적 수익률", value=f"{strategy_final_return:.2f} %")
-                with col2:
-                    st.metric(label="📈 단순 보유 최종 누적 수익률", value=f"{hold_final_return:.2f} %")
-                with col3:
-                    st.metric(
-                        label="🛒 총 매수 체결 횟수", 
-                        value=f"{total_buys} 회",
-                        delta=f"체결률: {(total_buys/total_days)*100:.1f} %"
-                    )
-                with col4:
-                    st.metric(label="⏳ 총 영업일 수", value=f"{total_days} 일")
+            # 통합 비교 모드 연산 (두 개 모두 연산)
+            else:
+                X, y = prepare_features(df)
+                pred_series = run_rolling_forecast(X, y, df.index, window_size)
+                actual_close = df['종가'].loc[pred_series.index]
+                ml_df = run_ml_backtest(df, pred_series)
                 
-                # 실제 주가 vs 매수 목표가 비교 차트
-                st.subheader(f"🏷️ 실제 {ticker_name} 주가 vs 매수 목표가(Buy Target)")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=vbt_df.index, 
-                    y=vbt_df['종가'], 
-                    name="실제 종가", 
+                # 변동성 돌파도 머신러닝 예측 기간과 정확히 일치시켜 1대1 비교
+                vbt_full = run_vbt_backtest(df, K)
+                vbt_df = vbt_full.loc[pred_series.index]
+                
+                ml_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
+                vbt_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = ml_df['Hold_Cum_Return'].iloc[-1]
+                mae = (actual_close - pred_series).abs().mean()
+                
+            # --- 구조 1: 성과 지표 (Metrics 4개) ---
+            col1, col2, col3, col4 = st.columns(4)
+            
+            if strategy_choice == "머신러닝 롤링 예측 전략":
+                with col1:
+                    st.metric(label="🤖 머신러닝 전략 누적 수익률", value=f"{strategy_final_return:.2f} %", delta=f"보유 대비: {strategy_final_return - hold_final_return:+.2f}%")
+                with col2:
+                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                with col3:
+                    st.metric(label="📊 평균 절대 오차 (MAE)", value=f"{mae:,.0f} 원", delta=f"오차율(MAPE): {mape:.2f}%", delta_color="inverse")
+                with col4:
+                    st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
+                    
+            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                with col1:
+                    st.metric(label="⚡ 변동성 돌파 전략 누적 수익률", value=f"{strategy_final_return:.2f} %", delta=f"보유 대비: {strategy_final_return - hold_final_return:+.2f}%")
+                with col2:
+                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                with col3:
+                    st.metric(label="🛒 총 매수 체결 횟수", value=f"{total_buys} 회", delta=f"체결률: {(total_buys/total_days)*100:.1f}%")
+                with col4:
+                    st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
+                    
+            else: # 통합 비교 모드
+                with col1:
+                    st.metric(label="🤖 머신러닝 전략 수익률", value=f"{ml_final_return:.2f} %", delta=f"보유 대비 {ml_final_return - hold_final_return:+.2f}%")
+                with col2:
+                    st.metric(label="⚡ 변동성 돌파 전략 수익률", value=f"{vbt_final_return:.2f} %", delta=f"보유 대비 {vbt_final_return - hold_final_return:+.2f}%")
+                with col3:
+                    st.metric(label="📈 단순 보유 누적 수익률", value=f"{hold_final_return:.2f} %")
+                with col4:
+                    st.metric(label="🎯 머신러닝 평균 오차 (MAE)", value=f"{mae:,.0f} 원")
+
+            # --- 구조 2: 주가 비교 차트 ---
+            if strategy_choice == "머신러닝 롤링 예측 전략":
+                st.subheader(f"🔮 실제 {ticker_name} 종가 vs 예측 주가 비교")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=df.index, y=df['종가'], name="실제 종가", 
                     line=dict(color="#1f77b4", width=2),
                     hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
                 ))
-                fig.add_trace(go.Scatter(
-                    x=vbt_df.index, 
-                    y=vbt_df['Buy_Target'], 
-                    name="매수 목표가 (시가 + Range * K)", 
-                    line=dict(color="#ff7f0e", width=1.5, dash="dash"),
+                fig_price.add_trace(go.Scatter(
+                    x=pred_series.index, y=pred_series, name="예측 종가 (머신러닝)", 
+                    line=dict(color="#ff7f0e", width=2, dash="dash"),
+                    hovertemplate='<b>예측 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                
+            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                st.subheader(f"🏷️ 실제 {ticker_name} 주가 vs 매수 목표가(Buy Target)")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['종가'], name="실제 종가", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['Buy_Target'], name="매수 목표가 (시가 + Range * K)", 
+                    line=dict(color="#d62728", width=1.5, dash="dash"),
                     hovertemplate='<b>매수 목표가</b><br>날짜: %{x}<br>목표가: %{y:,.0f}원<extra></extra>'
                 ))
-                fig.update_layout(
-                    plot_bgcolor="white",
-                    paper_bgcolor="white",
-                    margin=dict(l=20, r=20, t=30, b=20),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가 (원)"),
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
                 
-                # 누적 수익률 비교 추이
-                st.subheader("📈 백테스트 누적 수익률 비교 추이")
-                fig_ret = go.Figure()
+            else: # 통합 비교 모드
+                st.subheader(f"📊 실제 {ticker_name} 주가 및 전략별 신호선 비교")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=df.index, y=df['종가'], name="실제 종가", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=pred_series.index, y=pred_series, name="예측 종가 (머신러닝)", 
+                    line=dict(color="#ff7f0e", width=1.5, dash="dash"),
+                    hovertemplate='<b>예측 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['Buy_Target'], name="돌파 매수 목표가 (VBT)", 
+                    line=dict(color="#d62728", width=1.5, dash="dot"),
+                    hovertemplate='<b>매수 목표가</b><br>날짜: %{x}<br>목표가: %{y:,.0f}원<extra></extra>'
+                ))
+            
+            fig_price.update_layout(
+                plot_bgcolor="white", paper_bgcolor="white",
+                margin=dict(l=20, r=20, t=30, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가 (원)"),
+                height=400
+            )
+            st.plotly_chart(fig_price, use_container_width=True)
+
+            # --- 구조 3: 누적 수익률 비교 추이 그래프 ---
+            st.subheader("📈 백테스트 누적 수익률 비교 추이")
+            fig_ret = go.Figure()
+            
+            if strategy_choice == "머신러닝 롤링 예측 전략":
                 fig_ret.add_trace(go.Scatter(
-                    x=vbt_df.index, 
-                    y=vbt_df['Strategy_Cum_Return'], 
-                    name="변동성 돌파 전략", 
+                    x=ml_df.index, y=ml_df['Strategy_Cum_Return'], name="🤖 머신러닝 예측 전략", 
                     line=dict(color="#2ca02c", width=2.5),
-                    hovertemplate='<b>변동성 돌파 수익률</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                    hovertemplate='<b>머신러닝 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
                 ))
                 fig_ret.add_trace(go.Scatter(
-                    x=vbt_df.index, 
-                    y=vbt_df['Hold_Cum_Return'], 
-                    name="단순 보유", 
+                    x=ml_df.index, y=ml_df['Hold_Cum_Return'], name="📈 단순 보유", 
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
-                    hovertemplate='<b>단순 보유 수익률</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
                 ))
-                fig_ret.update_layout(
-                    plot_bgcolor="white",
-                    paper_bgcolor="white",
-                    margin=dict(l=20, r=20, t=30, b=20),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", title="누적 수익률 (%)"),
-                    height=400
-                )
-                st.plotly_chart(fig_ret, use_container_width=True)
+            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                fig_ret.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['Strategy_Cum_Return'], name="⚡ 변동성 돌파 전략", 
+                    line=dict(color="#9467bd", width=2.5),
+                    hovertemplate='<b>변동성 돌파 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['Hold_Cum_Return'], name="📈 단순 보유", 
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+            else: # 통합 비교 모드
+                fig_ret.add_trace(go.Scatter(
+                    x=ml_df.index, y=ml_df['Strategy_Cum_Return'], name="🤖 머신러닝 예측 전략", 
+                    line=dict(color="#2ca02c", width=2.5),
+                    hovertemplate='<b>머신러닝 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=vbt_df.index, y=vbt_df['Strategy_Cum_Return'], name="⚡ 변동성 돌파 전략", 
+                    line=dict(color="#9467bd", width=2.5),
+                    hovertemplate='<b>변동성 돌파 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=ml_df.index, y=ml_df['Hold_Cum_Return'], name="📈 단순 보유 (Buy & Hold)", 
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
                 
-                # 일별 수익률 변동 바 차트 및 요약 테이블
-                st.subheader("📊 변동성 돌파 전략 일별 수익률 및 월별 통계")
-                
-                col_chart, col_table = st.columns([2, 1])
+            fig_ret.update_layout(
+                plot_bgcolor="white", paper_bgcolor="white",
+                margin=dict(l=20, r=20, t=30, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                yaxis=dict(showgrid=True, gridcolor="#e9ecef", title="누적 수익률 (%)"),
+                height=400
+            )
+            st.plotly_chart(fig_ret, use_container_width=True)
+
+            # --- 구조 4: 월별 분석 차트 및 통계 테이블 (2열 분할 구성) ---
+            st.subheader("📅 상세 요약 및 월별 분석")
+            
+            col_chart, col_table = st.columns([2, 1])
+            
+            if strategy_choice == "머신러닝 롤링 예측 전략":
+                monthly_stats = calculate_ml_monthly_stats(actual_close, pred_series, ml_df)
                 with col_chart:
-                    # 일별 수익률 막대 차트 (변동성 돌파 전략_일별수익률.py의 시각화 로직 통합)
                     fig_bar = px.bar(
-                        vbt_df, 
-                        x=vbt_df.index, 
-                        y='Daily_Return_Pct',
-                        labels={'Daily_Return_Pct': '일별 수익률 (%)'},
+                        monthly_stats, x='년-월', y='평균 절대 오차 (원)', 
+                        color='평균 절대 오차 (원)',
+                        color_continuous_scale=px.colors.sequential.OrRd
+                        )
+                    fig_bar.update_traces(hovertemplate='<b>년-월</b>: %{x}<br><b>평균 절대 오차</b>: %{y:,.0f}원<extra></extra>')
+                    fig_bar.update_layout(
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        xaxis=dict(type='category', title="년-월"),
+                        yaxis=dict(tickformat=",", title="평균 오차 (원)"),
+                        coloraxis_colorbar=dict(title="오차 (원)"),
+                        height=350
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                    
+                with col_table:
+                    st.write("📊 **월별 통계 요약 데이터**")
+                    display_df = monthly_stats.copy()
+                    display_df['평균 절대 오차 (원)'] = display_df['평균 절대 오차 (원)'].map('{:,.0f}원'.format)
+                    display_df['평균 오차율 (%)'] = display_df['평균 오차율 (%)'].map('{:.2f}%'.format)
+                    display_df['월간 수익률 (%)'] = display_df['월간 수익률 (%)'].map('{:+.2f}%'.format)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                summary_stats = calculate_vbt_monthly_stats(vbt_df)
+                with col_chart:
+                    fig_bar = px.bar(
+                        vbt_df, x=vbt_df.index, y='Daily_Return_Pct',
                         color='Daily_Return_Pct',
                         color_continuous_scale=px.colors.diverging.RdYlGn,
                         color_continuous_midpoint=0.0
                     )
-                    fig_bar.update_traces(
-                        hovertemplate='<b>날짜</b>: %{x}<br><b>일별 수익률</b>: %{y:.2f}%<extra></extra>'
-                    )
+                    fig_bar.update_traces(hovertemplate='<b>날짜</b>: %{x}<br><b>일별 수익률</b>: %{y:.2f}%<extra></extra>')
                     fig_bar.update_layout(
-                        plot_bgcolor="white",
-                        paper_bgcolor="white",
+                        plot_bgcolor="white", paper_bgcolor="white",
                         xaxis=dict(title="날짜"),
                         yaxis=dict(title="일별 수익률 (%)"),
                         coloraxis_colorbar=dict(title="수익률 (%)"),
@@ -486,5 +575,44 @@ if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True)
                     display_stats['단순 보유 수익률 (%)'] = display_stats['단순 보유 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)
                     
+            else: # 통합 비교 모드
+                combined_stats = calculate_combined_monthly_stats(ml_df, vbt_df)
+                with col_chart:
+                    fig_monthly_bar = go.Figure()
+                    fig_monthly_bar.add_trace(go.Bar(
+                        x=combined_stats['년-월'], y=combined_stats['머신러닝 수익률 (%)'],
+                        name="🤖 머신러닝", marker_color="#2ca02c",
+                        hovertemplate='<b>머신러닝 월수익률</b><br>년-월: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                    ))
+                    fig_monthly_bar.add_trace(go.Bar(
+                        x=combined_stats['년-월'], y=combined_stats['변동성 돌파 수익률 (%)'],
+                        name="⚡ 변동성 돌파", marker_color="#9467bd",
+                        hovertemplate='<b>변동성 돌파 월수익률</b><br>년-월: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                    ))
+                    fig_monthly_bar.add_trace(go.Bar(
+                        x=combined_stats['년-월'], y=combined_stats['단순 보유 수익률 (%)'],
+                        name="📈 단순 보유", marker_color="#7f7f7f",
+                        hovertemplate='<b>단순 보유 월수익률</b><br>년-월: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                    ))
+                    fig_monthly_bar.update_layout(
+                        barmode='group', plot_bgcolor="white", paper_bgcolor="white",
+                        xaxis=dict(type='category', title="년-월"),
+                        yaxis=dict(title="월간 수익률 (%)"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        height=350
+                    )
+                    st.plotly_chart(fig_monthly_bar, use_container_width=True)
+                    
+                with col_table:
+                    st.write("📊 **월별 전략별 수익률 대조 테이블**")
+                    display_stats = combined_stats.copy()
+                    display_stats['머신러닝 수익률 (%)'] = display_stats['머신러닝 수익률 (%)'].map('{:+.2f}%'.format)
+                    display_stats['변동성 돌파 수익률 (%)'] = display_stats['변동성 돌파 수익률 (%)'].map('{:+.2f}%'.format)
+                    display_stats['단순 보유 수익률 (%)'] = display_stats['단순 보유 수익률 (%)'].map('{:+.2f}%'.format)
+                    display_stats['돌파 매수 횟수 (회)'] = display_stats['돌파 매수 횟수 (회)'].map('{:,.0f}회'.format)
+                    display_stats['머신러닝 오차 (원)'] = display_stats['머신러닝 오차 (원)'].map('{:,.0f}원'.format)
+                    st.dataframe(display_stats, use_container_width=True, hide_index=True)
+    else:
+        st.info("👈 왼쪽 사이드바에서 [백테스트 실행하기] 버튼을 눌러주세요!")
 else:
     st.info("👈 왼쪽 사이드바에서 전략 및 조건을 설정한 후 [백테스트 실행하기] 버튼을 눌러주세요!")
