@@ -6,10 +6,21 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
+from pathlib import Path
 
 # [LOG: 20260604_1357]
 
 UNKNOWN_TICKER_NAME = "알 수 없는 종목"
+INVALID_TICKER_HINTS = {
+    "396580": "ACE 미국30년국채액티브(H)의 종목코드는 453850입니다."
+}
+
+
+def configure_yfinance_cache(yf):
+    """yfinance가 쓰는 로컬 캐시를 프로젝트 내부로 고정합니다."""
+    cache_dir = Path(__file__).resolve().parents[1] / ".cache" / "yfinance"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    yf.set_tz_cache_location(str(cache_dir))
 
 # 1. 종목 이름 조회 함수 (pykrx와 yfinance를 모두 활용하여 미국 주식 및 국내 ETF 지원)
 def get_ticker_name(ticker_code):
@@ -27,7 +38,7 @@ def get_ticker_name(ticker_code):
         "252670": "KODEX 200선물인버스2X",
         "114800": "KODEX 인버스",
         "122630": "KODEX 레버리지",
-        "396580": "ACE 미국30년국채액티브(H)",  # 국내상장 TLT 추종 ETF
+        "453850": "ACE 미국30년국채액티브(H)",  # 국내상장 TLT 추종 ETF
         "476560": "KODEX 미국30년국채액티브(H)", # 국내상장 TLT 추종 ETF
         "458250": "TIGER 미국30년국채액티브(H)"  # 국내상장 TLT 추종 ETF
     }
@@ -39,6 +50,7 @@ def get_ticker_name(ticker_code):
     if ticker_code.isalpha():
         try:
             import yfinance as yf
+            configure_yfinance_cache(yf)
             ticker_info = yf.Ticker(ticker_code.upper()).info
             name = ticker_info.get('longName') or ticker_info.get('shortName')
             if name:
@@ -58,6 +70,7 @@ def get_ticker_name(ticker_code):
     # pykrx로 조회가 안 되는 경우 yfinance(.KS)로 재차 조회
     try:
         import yfinance as yf
+        configure_yfinance_cache(yf)
         ticker_info = yf.Ticker(f"{ticker_code}.KS").info
         name = ticker_info.get('longName') or ticker_info.get('shortName')
         if name:
@@ -77,6 +90,7 @@ def load_data(start_date, end_date, ticker_code):
     if ticker_code.isalpha():
         try:
             import yfinance as yf
+            configure_yfinance_cache(yf)
             start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
             end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
             df = yf.download(ticker_code.upper(), start=start_yf, end=end_yf)
@@ -108,6 +122,7 @@ def load_data(start_date, end_date, ticker_code):
     if df.empty and len(ticker_code) == 6 and ticker_code.isdigit():
         try:
             import yfinance as yf
+            configure_yfinance_cache(yf)
             start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
             end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
             df = yf.download(f"{ticker_code}.KS", start=start_yf, end=end_yf)
@@ -390,14 +405,17 @@ strategy_choice = st.sidebar.radio(
 )
 
 # 2. 공통 종목 코드 입력
-ticker_code = st.sidebar.text_input("종목 코드 입력 (예: 360750, 396580, TLT)", "360750")
+ticker_code = st.sidebar.text_input("종목 코드 입력 (예: 360750, 453850, TLT)", "360750")
 ticker_symbol = ticker_code.strip().upper()
 ticker_name = get_ticker_name(ticker_code)
 is_known_ticker = ticker_name != UNKNOWN_TICKER_NAME
 if is_known_ticker:
     st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_symbol})")
 else:
+    hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
     st.sidebar.warning(f"알 수 없는 종목 코드입니다: **{ticker_symbol or '미입력'}**")
+    if hint:
+        st.sidebar.info(hint)
 
 # 🚀 백테스트 실행 버튼 위치를 상단(종목 코드 바로 아래, 시작 날짜 위)으로 이동
 run_button_clicked = st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True)
@@ -769,6 +787,10 @@ if not df.empty:
         st.info("👈 왼쪽 사이드바에서 [백테스트 실행하기] 버튼을 눌러주세요!")
 else:
     if not is_known_ticker:
-        st.error("알 수 없는 종목 코드입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요.")
+        hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
+        message = "알 수 없는 종목 코드입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요."
+        if hint:
+            message = f"{message} {hint}"
+        st.error(message)
     else:
         st.info("👈 왼쪽 사이드바에서 전략 및 조건을 설정한 후 [백테스트 실행하기] 버튼을 눌러주세요!")
