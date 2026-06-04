@@ -406,7 +406,7 @@ def load_data(start_date, end_date, ticker_code):
     return pd.DataFrame()
 
 
-# [LOG: 20260604_1746]
+# [LOG: 20260604_1748]
 # 2-2. 주요 재무 데이터 로드 함수 (yfinance 연동)
 @st.cache_data
 def load_financial_data(ticker_code):
@@ -928,9 +928,11 @@ if st.session_state['scanner_results'] is not None:
 # 🔍 키워드 기반 종목 스캐너 (사이드바 맨 위 배치)
 with st.sidebar.expander("🔍 키워드 기반 종목 스캐너 (종목 발굴)", expanded=False):
     st.markdown("<small>입력 키워드(예: `AI`, `Cloud`, `Semiconductor`)가 설명글에 포함된 우량 종목들을 찾아 줍니다.</small>", unsafe_allow_html=True)
-    keyword = st.text_input("스캔할 영문 키워드 입력", "AI", key="scan_keyword_sb")
+    with st.form(key="scanner_form_sb", clear_on_submit=False):
+        keyword = st.text_input("스캔할 영문 키워드 입력", "AI", key="scan_keyword_sb")
+        submit_btn = st.form_submit_button("🚀 종목 스캐닝 시작", use_container_width=True)
     
-    if st.button("🚀 종목 스캐닝 시작", use_container_width=True, key="scan_btn_sb"):
+    if submit_btn:
         scan_pool = {
             "AAPL": "애플", "MSFT": "마이크로소프트", "TSLA": "테슬라", "NVDA": "엔비디아",
             "AMZN": "아마존", "GOOGL": "구글", "META": "메타", 
