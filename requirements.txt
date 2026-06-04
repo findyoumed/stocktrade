@@ -1,6 +1,9 @@
+# [LOG: 20260604_1940] Add yfinance and requests dependencies
 streamlit
 pykrx
 scikit-learn
 plotly
 pandas
 numpy
+yfinance
+requests
