@@ -618,6 +618,193 @@ def calculate_combined_monthly_stats(ml_df, vbt_df):
     final_df = merged[['년-월', '머신러닝 수익률 (%)', '변동성 돌파 수익률 (%)', '단순 보유 수익률 (%)', '돌파 매수 횟수 (회)', '머신러닝 오차 (원)']]
     return final_df
 
+# [LOG: 20260604_1705]
+# 10. 이동평균선 골든크로스 전략 백테스트 함수
+def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct):
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    ma_df = df.copy()
+    ma_df['SMA_Short'] = ma_df['종가'].rolling(window=short_period).mean()
+    ma_df['SMA_Long'] = ma_df['종가'].rolling(window=long_period).mean()
+    
+    ma_df['Buy_Signal'] = ma_df['SMA_Short'] > ma_df['SMA_Long']
+    ma_df['Buy_Signal'] = np.where(pd.isna(ma_df['SMA_Long']), False, ma_df['Buy_Signal'])
+    
+    prev_signals = ma_df['Buy_Signal'].shift(1).fillna(False)
+    
+    entry_cost = np.where((ma_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
+    exit_cost = np.where((ma_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
+    total_cost = entry_cost + exit_cost
+    
+    ma_df['Strategy_Return'] = np.where(
+        ma_df['Buy_Signal'],
+        (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) - total_cost,
+        1.0 - total_cost
+    )
+    ma_df['Strategy_Return'] = ma_df['Strategy_Return'].fillna(1.0)
+    
+    hold_returns = ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])
+    hold_returns_array = hold_returns.fillna(1.0).values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    ma_df['Hold_Return'] = hold_returns_array
+    
+    ma_df['Strategy_Cum_Return'] = (ma_df['Strategy_Return'].cumprod() - 1) * 100
+    ma_df['Hold_Cum_Return'] = (ma_df['Hold_Return'].cumprod() - 1) * 100
+    ma_df['Strategy_Balance'] = initial_budget * ma_df['Strategy_Return'].cumprod()
+    ma_df['Hold_Balance'] = initial_budget * ma_df['Hold_Return'].cumprod()
+    
+    ma_df['Daily_Return_Pct'] = (ma_df['Strategy_Return'] - 1) * 100
+    return ma_df
+
+def calculate_ma_cross_monthly_stats(ma_df):
+    ma_df['YearMonth'] = ma_df.index.strftime('%Y-%m')
+    ma_df['Buy_Count'] = np.where(ma_df['Buy_Signal'], 1, 0)
+    summary = ma_df.groupby('YearMonth').agg({
+        'Buy_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }).reset_index()
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
+    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    return summary
+
+# 11. RSI 과매도 반등 전략 백테스트 함수
+def run_rsi_backtest(df, period, buy_rsi, sell_rsi, initial_budget, fee_rate_pct, slippage_rate_pct):
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    rsi_df = df.copy()
+    delta = rsi_df['종가'].diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    rsi_df['RSI'] = 100 - (100 / (1 + rs))
+    
+    signals = []
+    position = False
+    for r in rsi_df['RSI'].values:
+        if pd.isna(r):
+            signals.append(False)
+        elif not position and r <= buy_rsi:
+            position = True
+            signals.append(True)
+        elif position and r >= sell_rsi:
+            position = False
+            signals.append(False)
+        else:
+            signals.append(position)
+            
+    rsi_df['Buy_Signal'] = signals
+    prev_signals = rsi_df['Buy_Signal'].shift(1).fillna(False)
+    
+    entry_cost = np.where((rsi_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
+    exit_cost = np.where((rsi_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
+    total_cost = entry_cost + exit_cost
+    
+    rsi_df['Strategy_Return'] = np.where(
+        rsi_df['Buy_Signal'],
+        (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) - total_cost,
+        1.0 - total_cost
+    )
+    rsi_df['Strategy_Return'] = rsi_df['Strategy_Return'].fillna(1.0)
+    
+    hold_returns = rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])
+    hold_returns_array = hold_returns.fillna(1.0).values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    rsi_df['Hold_Return'] = hold_returns_array
+    
+    rsi_df['Strategy_Cum_Return'] = (rsi_df['Strategy_Return'].cumprod() - 1) * 100
+    rsi_df['Hold_Cum_Return'] = (rsi_df['Hold_Return'].cumprod() - 1) * 100
+    rsi_df['Strategy_Balance'] = initial_budget * rsi_df['Strategy_Return'].cumprod()
+    rsi_df['Hold_Balance'] = initial_budget * rsi_df['Hold_Return'].cumprod()
+    
+    rsi_df['Daily_Return_Pct'] = (rsi_df['Strategy_Return'] - 1) * 100
+    return rsi_df
+
+def calculate_rsi_monthly_stats(rsi_df):
+    rsi_df['YearMonth'] = rsi_df.index.strftime('%Y-%m')
+    rsi_df['Buy_Count'] = np.where(rsi_df['Buy_Signal'], 1, 0)
+    summary = rsi_df.groupby('YearMonth').agg({
+        'Buy_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }).reset_index()
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
+    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    return summary
+
+# 12. 볼린저 밴드 반등 전략 백테스트 함수
+def run_bollinger_backtest(df, period, std_dev, initial_budget, fee_rate_pct, slippage_rate_pct):
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    bb_df = df.copy()
+    bb_df['Mid'] = bb_df['종가'].rolling(window=period).mean()
+    bb_df['Std'] = bb_df['종가'].rolling(window=period).std()
+    bb_df['Upper_Band'] = bb_df['Mid'] + (std_dev * bb_df['Std'])
+    bb_df['Lower_Band'] = bb_df['Mid'] - (std_dev * bb_df['Std'])
+    
+    signals = []
+    position = False
+    closes = bb_df['종가'].values
+    lowers = bb_df['Lower_Band'].values
+    uppers = bb_df['Upper_Band'].values
+    
+    for i in range(len(bb_df)):
+        c = closes[i]
+        l = lowers[i]
+        u = uppers[i]
+        if pd.isna(l) or pd.isna(u):
+            signals.append(False)
+        elif not position and c <= l:
+            position = True
+            signals.append(True)
+        elif position and c >= u:
+            position = False
+            signals.append(False)
+        else:
+            signals.append(position)
+            
+    bb_df['Buy_Signal'] = signals
+    prev_signals = bb_df['Buy_Signal'].shift(1).fillna(False)
+    
+    entry_cost = np.where((bb_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
+    exit_cost = np.where((bb_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
+    total_cost = entry_cost + exit_cost
+    
+    bb_df['Strategy_Return'] = np.where(
+        bb_df['Buy_Signal'],
+        (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) - total_cost,
+        1.0 - total_cost
+    )
+    bb_df['Strategy_Return'] = bb_df['Strategy_Return'].fillna(1.0)
+    
+    hold_returns = bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])
+    hold_returns_array = hold_returns.fillna(1.0).values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    bb_df['Hold_Return'] = hold_returns_array
+    
+    bb_df['Strategy_Cum_Return'] = (bb_df['Strategy_Return'].cumprod() - 1) * 100
+    bb_df['Hold_Cum_Return'] = (bb_df['Hold_Return'].cumprod() - 1) * 100
+    bb_df['Strategy_Balance'] = initial_budget * bb_df['Strategy_Return'].cumprod()
+    bb_df['Hold_Balance'] = initial_budget * bb_df['Hold_Return'].cumprod()
+    
+    bb_df['Daily_Return_Pct'] = (bb_df['Strategy_Return'] - 1) * 100
+    return bb_df
+
+def calculate_bb_monthly_stats(bb_df):
+    bb_df['YearMonth'] = bb_df.index.strftime('%Y-%m')
+    bb_df['Buy_Count'] = np.where(bb_df['Buy_Signal'], 1, 0)
+    summary = bb_df.groupby('YearMonth').agg({
+        'Buy_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }).reset_index()
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
+    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    return summary
+
 # --- Streamlit UI 시작 ---
 st.set_page_config(page_title="주식 투자 전략 백테스트 종합 비교 대시보드", layout="wide")
 
@@ -650,7 +837,14 @@ st.sidebar.header("⚙️ 전략 및 파라미터 설정")
 # 1. 라디오 버튼을 사용하여 전략 및 통합 모드 선택 (3개 옵션 제공)
 strategy_choice = st.sidebar.radio(
     "💡 분석할 전략 선택",
-    options=["머신러닝 롤링 예측 전략", "변동성 돌파 전략 (Larry Williams)", "두 전략 통합 비교"]
+    options=[
+        "머신러닝 롤링 예측 전략",
+        "변동성 돌파 전략 (Larry Williams)",
+        "이동평균선 골든크로스 전략",
+        "RSI 과매도 반등 전략",
+        "볼린저 밴드 반등 전략",
+        "두 전략 통합 비교"
+    ]
 )
 
 # 2. 공통 종목 코드 입력
@@ -709,14 +903,45 @@ slippage_rate = st.sidebar.number_input("📉 슬리피지율 (편도, %)", min_
 st.sidebar.subheader("🎯 전략 파라미터")
 if strategy_choice == "머신러닝 롤링 예측 전략":
     window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
-    K = 0.5 # 미사용 기본값
+    K = 0.5
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    bb_period, bb_std = 20, 2.0
+    ma_short, ma_long = 20, 60
 elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
     K = st.sidebar.slider("변동성 돌파 계수 (K)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
-    window_size = 90 # 미사용 기본값
+    window_size = 90
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    bb_period, bb_std = 20, 2.0
+    ma_short, ma_long = 20, 60
+elif strategy_choice == "이동평균선 골든크로스 전략":
+    ma_short = st.sidebar.slider("단기 이동평균선 (일)", min_value=5, max_value=50, value=20, step=5)
+    ma_long = st.sidebar.slider("장기 이동평균선 (일)", min_value=20, max_value=200, value=60, step=10)
+    window_size = 90
+    K = 0.5
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    bb_period, bb_std = 20, 2.0
+elif strategy_choice == "RSI 과매도 반등 전략":
+    rsi_period = st.sidebar.slider("RSI 계산 기간 (일)", min_value=5, max_value=30, value=14, step=1)
+    buy_rsi = st.sidebar.slider("매수 기준 RSI (이하)", min_value=10, max_value=50, value=30, step=5)
+    sell_rsi = st.sidebar.slider("매도 기준 RSI (이상)", min_value=50, max_value=90, value=70, step=5)
+    window_size = 90
+    K = 0.5
+    bb_period, bb_std = 20, 2.0
+    ma_short, ma_long = 20, 60
+elif strategy_choice == "볼린저 밴드 반등 전략":
+    bb_period = st.sidebar.slider("이동평균 기간 (일)", min_value=5, max_value=50, value=20, step=5)
+    bb_std = st.sidebar.slider("표준편차 배수", min_value=1.0, max_value=3.0, value=2.0, step=0.1)
+    window_size = 90
+    K = 0.5
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    ma_short, ma_long = 20, 60
 else:
     # 통합 비교 모드 시 두 설정 모두 표시
     window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
     K = st.sidebar.slider("변동성 돌파 계수 (K)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    bb_period, bb_std = 20, 2.0
+    ma_short, ma_long = 20, 60
 
 # --- 세션 상태 초기화 및 관리 ---
 if 'stock_data' not in st.session_state:
@@ -809,16 +1034,74 @@ else:
                 total_buys = np.sum(vbt_df['Buy_Signal'])
                 total_days = len(vbt_df)
                 
+            # 이동평균선 골든크로스 연산
+            elif strategy_choice == "이동평균선 골든크로스 전략":
+                ma_df = run_ma_cross_backtest(df, ma_short, ma_long, initial_budget, fee_rate, slippage_rate)
+                strategy_final_return = ma_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = ma_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = ma_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = ma_df['Hold_Balance'].iloc[-1]
+                total_buys = np.sum(ma_df['Buy_Signal'] & (~ma_df['Buy_Signal'].shift(1).fillna(False)))
+                total_days = len(ma_df)
+
+            # RSI 과매도 반등 연산
+            elif strategy_choice == "RSI 과매도 반등 전략":
+                rsi_df = run_rsi_backtest(df, rsi_period, buy_rsi, sell_rsi, initial_budget, fee_rate, slippage_rate)
+                strategy_final_return = rsi_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = rsi_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = rsi_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = rsi_df['Hold_Balance'].iloc[-1]
+                total_buys = np.sum(rsi_df['Buy_Signal'] & (~rsi_df['Buy_Signal'].shift(1).fillna(False)))
+                total_days = len(rsi_df)
+
+            # 볼린저 밴드 반등 연산
+            elif strategy_choice == "볼린저 밴드 반등 전략":
+                bb_df = run_bollinger_backtest(df, bb_period, bb_std, initial_budget, fee_rate, slippage_rate)
+                strategy_final_return = bb_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = bb_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = bb_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = bb_df['Hold_Balance'].iloc[-1]
+                total_buys = np.sum(bb_df['Buy_Signal'] & (~bb_df['Buy_Signal'].shift(1).fillna(False)))
+                total_days = len(bb_df)
+                
             # 통합 비교 모드 연산 (두 개 모두 연산)
             else:
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size)
-                actual_close = df['종가'].loc[pred_series.index]
-                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
                 
-                # 변동성 돌파도 머신러닝 예측 기간과 정확히 일치시켜 1대1 비교
-                vbt_full = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
-                vbt_df = vbt_full.loc[pred_series.index]
+                # 1. 머신러닝 예측 백테스트
+                ml_df_predicted = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
+                
+                # 2. 전체 기간 데이터프레임으로 확장 (앞쪽 학습 기간 90일 동안은 매매 없음/잔고 유지 처리)
+                ml_df = pd.DataFrame(index=df.index)
+                ml_df['Actual_Close'] = df['종가']
+                ml_df['Predicted_Close'] = pred_series
+                ml_df['Predicted_Close'] = ml_df['Predicted_Close'].fillna(df['종가'])
+                
+                for col in ['Strategy_Return', 'Hold_Return', 'Strategy_Cum_Return', 'Hold_Cum_Return', 'Strategy_Balance', 'Hold_Balance']:
+                    if col in ml_df_predicted.columns:
+                        ml_df[col] = ml_df_predicted[col]
+                
+                # NaN 값을 가진 앞쪽 학습 기간을 기본값(변동 없음)으로 채움
+                ml_df['Strategy_Return'] = ml_df['Strategy_Return'].fillna(1.0)
+                
+                # 단순 보유 수익률 계산
+                hold_returns = df['종가'] / df['종가'].shift(1)
+                hold_returns = hold_returns.fillna(1.0)
+                hold_returns_array = hold_returns.values
+                if len(hold_returns_array) > 0:
+                    hold_returns_array[0] = hold_returns_array[0] - (fee_rate + slippage_rate) / 100
+                ml_df['Hold_Return'] = hold_returns_array
+                
+                # 전체 누적 값 재산출
+                ml_df['Strategy_Cum_Return'] = (ml_df['Strategy_Return'].cumprod() - 1) * 100
+                ml_df['Hold_Cum_Return'] = (ml_df['Hold_Return'].cumprod() - 1) * 100
+                ml_df['Strategy_Balance'] = initial_budget * ml_df['Strategy_Return'].cumprod()
+                ml_df['Hold_Balance'] = initial_budget * ml_df['Hold_Return'].cumprod()
+                
+                # 3. 변동성 돌파도 전체 기간으로 사용
+                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
+                actual_close = df['종가']
                 
                 ml_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
                 vbt_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
@@ -827,7 +1110,9 @@ else:
                 ml_final_balance = ml_df['Strategy_Balance'].iloc[-1]
                 vbt_final_balance = vbt_df['Strategy_Balance'].iloc[-1]
                 hold_final_balance = ml_df['Hold_Balance'].iloc[-1]
-                mae = (actual_close - pred_series).abs().mean()
+                
+                # 예측 오차는 예측이 존재했던 구간에서만 평균 계산
+                mae = (df['종가'].loc[pred_series.index] - pred_series).abs().mean()
                 
             # --- 구조 1: 성과 지표 (Metrics 4개) ---
             col1, col2, col3, col4 = st.columns(4)
@@ -842,13 +1127,19 @@ else:
                 with col4:
                     st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
                     
-            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략"]:
+                strategy_label_name = {
+                    "변동성 돌파 전략 (Larry Williams)": "⚡ 변동성 돌파",
+                    "이동평균선 골든크로스 전략": "📈 이동평균선 크로스",
+                    "RSI 과매도 반등 전략": "🔄 RSI 반등",
+                    "볼린저 밴드 반등 전략": "🔘 볼린저 밴드"
+                }[strategy_choice]
                 with col1:
-                    st.metric(label="⚡ 변동성 돌파 최종 잔고 (수익률)", value=f"{strategy_final_balance:,.0f} 원", delta=f"{strategy_final_return:+.2f}%")
+                    st.metric(label=f"{strategy_label_name} 최종 잔고 (수익률)", value=f"{strategy_final_balance:,.0f} 원", delta=f"{strategy_final_return:+.2f}%")
                 with col2:
                     st.metric(label="📈 단순 보유 최종 잔고 (수익률)", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col3:
-                    st.metric(label="🛒 총 매수 체결 횟수", value=f"{total_buys} 회", delta=f"체결률: {(total_buys/total_days)*100:.1f}%")
+                    st.metric(label="🛒 총 매매 거래 횟수", value=f"{total_buys} 회", delta=f"참여율: {(total_buys/total_days)*100:.1f}%")
                 with col4:
                     st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
                     
@@ -876,6 +1167,15 @@ else:
                     line=dict(color="#ff7f0e", width=2, dash="dash"),
                     hovertemplate='<b>예측 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
                 ))
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=400
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
                 
             elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
                 st.subheader(f"🏷️ 실제 {ticker_name} 주가 vs 매수 목표가(Buy Target)")
@@ -890,6 +1190,114 @@ else:
                     line=dict(color="#d62728", width=1.5, dash="dash"),
                     hovertemplate='<b>매수 목표가</b><br>날짜: %{x}<br>목표가: %{y:,.0f}원<extra></extra>'
                 ))
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=400
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
+
+            elif strategy_choice == "이동평균선 골든크로스 전략":
+                st.subheader(f"📈 실제 {ticker_name} 주가 및 이동평균선(SMA)")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=ma_df.index, y=ma_df['종가'], name="실제 종가", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=ma_df.index, y=ma_df['SMA_Short'], name=f"단기 SMA ({ma_short}일)", 
+                    line=dict(color="#ff7f0e", width=1.5),
+                    hovertemplate='<b>단기 SMA</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=ma_df.index, y=ma_df['SMA_Long'], name=f"장기 SMA ({ma_long}일)", 
+                    line=dict(color="#2ca02c", width=1.5),
+                    hovertemplate='<b>장기 SMA</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=400
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
+
+            elif strategy_choice == "RSI 과매도 반등 전략":
+                st.subheader(f"🔄 실제 {ticker_name} 주가 및 RSI 보조지표")
+                
+                # 1. 주가 차트
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=rsi_df.index, y=rsi_df['종가'], name="실제 종가", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title=""),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=300
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
+                
+                # 2. RSI 차트
+                fig_rsi = go.Figure()
+                fig_rsi.add_trace(go.Scatter(
+                    x=rsi_df.index, y=rsi_df['RSI'], name="RSI",
+                    line=dict(color="#9467bd", width=1.5),
+                    hovertemplate='<b>RSI</b><br>날짜: %{x}<br>수치: %{y:.1f}<extra></extra>'
+                ))
+                fig_rsi.add_hline(y=buy_rsi, line_dash="dash", line_color="green", annotation_text=f"과매도 기준 ({buy_rsi})")
+                fig_rsi.add_hline(y=sell_rsi, line_dash="dash", line_color="red", annotation_text=f"과매도 기준 ({sell_rsi})")
+                fig_rsi.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=10, b=20),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", range=[0, 100], title="RSI"),
+                    height=180
+                )
+                st.plotly_chart(fig_rsi, use_container_width=True)
+
+            elif strategy_choice == "볼린저 밴드 반등 전략":
+                st.subheader(f"🔘 실제 {ticker_name} 주가 및 볼린저 밴드")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['종가'], name="실제 종가", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['Mid'], name="중간선 (SMA)", 
+                    line=dict(color="#ff7f0e", width=1.5, dash="dash"),
+                    hovertemplate='<b>중간선</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['Upper_Band'], name="상단 밴드", 
+                    line=dict(color="#2ca02c", width=1),
+                    hovertemplate='<b>상단 밴드</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['Lower_Band'], name="하단 밴드", 
+                    line=dict(color="#d62728", width=1),
+                    hovertemplate='<b>하단 밴드</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=400
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
                 
             else: # 통합 비교 모드
                 st.subheader(f"📊 실제 {ticker_name} 주가 및 전략별 신호선 비교")
@@ -909,16 +1317,15 @@ else:
                     line=dict(color="#d62728", width=1.5, dash="dot"),
                     hovertemplate='<b>매수 목표가</b><br>날짜: %{x}<br>목표가: %{y:,.0f}원<extra></extra>'
                 ))
-            
-            fig_price.update_layout(
-                plot_bgcolor="white", paper_bgcolor="white",
-                margin=dict(l=20, r=20, t=30, b=20),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
-                height=400
-            )
-            st.plotly_chart(fig_price, use_container_width=True)
+                fig_price.update_layout(
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                    yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
+                    height=400
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
 
             # --- 구조 3: 누적 수익률 비교 추이 그래프 ---
             st.subheader("📈 백테스트 누적 수익률 비교 추이")
@@ -943,6 +1350,39 @@ else:
                 ))
                 fig_ret.add_trace(go.Scatter(
                     x=vbt_df.index, y=vbt_df['Hold_Cum_Return'], name="📈 단순 보유", 
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+            elif strategy_choice == "이동평균선 골든크로스 전략":
+                fig_ret.add_trace(go.Scatter(
+                    x=ma_df.index, y=ma_df['Strategy_Cum_Return'], name="📈 이동평균 크로스 전략", 
+                    line=dict(color="#ff7f0e", width=2.5),
+                    hovertemplate='<b>이동평균 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=ma_df.index, y=ma_df['Hold_Cum_Return'], name="📈 단순 보유", 
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+            elif strategy_choice == "RSI 과매도 반등 전략":
+                fig_ret.add_trace(go.Scatter(
+                    x=rsi_df.index, y=rsi_df['Strategy_Cum_Return'], name="🔄 RSI 반등 전략", 
+                    line=dict(color="#9467bd", width=2.5),
+                    hovertemplate='<b>RSI 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=rsi_df.index, y=rsi_df['Hold_Cum_Return'], name="📈 단순 보유", 
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
+                    hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+            elif strategy_choice == "볼린저 밴드 반등 전략":
+                fig_ret.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['Strategy_Cum_Return'], name="🔘 볼린저 밴드 전략", 
+                    line=dict(color="#17becf", width=2.5),
+                    hovertemplate='<b>볼린저 밴드 전략</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=bb_df.index, y=bb_df['Hold_Cum_Return'], name="📈 단순 보유", 
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
                 ))
@@ -1004,11 +1444,23 @@ else:
                     display_df['월간 수익률 (%)'] = display_df['월간 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                     
-            elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
-                summary_stats = calculate_vbt_monthly_stats(vbt_df)
+            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략"]:
+                if strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                    summary_stats = calculate_vbt_monthly_stats(vbt_df)
+                    target_df = vbt_df
+                elif strategy_choice == "이동평균선 골든크로스 전략":
+                    summary_stats = calculate_ma_cross_monthly_stats(ma_df)
+                    target_df = ma_df
+                elif strategy_choice == "RSI 과매도 반등 전략":
+                    summary_stats = calculate_rsi_monthly_stats(rsi_df)
+                    target_df = rsi_df
+                else:
+                    summary_stats = calculate_bb_monthly_stats(bb_df)
+                    target_df = bb_df
+                    
                 with col_chart:
                     fig_bar = px.bar(
-                        vbt_df, x=vbt_df.index, y='Daily_Return_Pct',
+                        target_df, x=target_df.index, y='Daily_Return_Pct',
                         color='Daily_Return_Pct',
                         color_continuous_scale=px.colors.diverging.RdYlGn,
                         color_continuous_midpoint=0.0
@@ -1026,7 +1478,7 @@ else:
                 with col_table:
                     st.write("📅 **월별 거래 요약 데이터**")
                     display_stats = summary_stats.copy()
-                    display_stats['매수 횟수 (회)'] = display_stats['매수 횟수 (회)'].map('{:,.0f}회'.format)
+                    display_stats['매수 보유 일수 (일)'] = display_stats['매수 보유 일수 (일)'].map('{:,.0f}일'.format)
                     display_stats['전략 수익률 (%)'] = display_stats['전략 수익률 (%)'].map('{:+.2f}%'.format)
                     display_stats['단순 보유 수익률 (%)'] = display_stats['단순 보유 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)
