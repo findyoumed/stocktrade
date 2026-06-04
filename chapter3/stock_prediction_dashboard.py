@@ -7,10 +7,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# [LOG: 20260604_1323]
+# [LOG: 20260604_1356]
 
-# 1. 종목 이름 조회 함수
-@st.cache_data
+# 1. 종목 이름 조회 함수 (캐시 충돌 방지를 위해 @st.cache_data 데코레이터 제거)
 def get_ticker_name(ticker_code):
     """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자)"""
     etf_map = {
@@ -21,7 +20,10 @@ def get_ticker_name(ticker_code):
         "133690": "TIGER 미국나스닥100",
         "252670": "KODEX 200선물인버스2X",
         "114800": "KODEX 인버스",
-        "122630": "KODEX 레버리지"
+        "122630": "KODEX 레버리지",
+        "396580": "ACE 미국30년국채액티브(H)",  # 국내상장 TLT 추종 ETF
+        "476560": "KODEX 미국30년국채액티브(H)", # 국내상장 TLT 추종 ETF
+        "458250": "TIGER 미국30년국채액티브(H)"  # 국내상장 TLT 추종 ETF
     }
     
     if ticker_code in etf_map:
