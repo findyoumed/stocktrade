@@ -406,7 +406,7 @@ def load_data(start_date, end_date, ticker_code):
     return pd.DataFrame()
 
 
-# [LOG: 20260604_1737]
+# [LOG: 20260604_1739]
 # 2-2. 주요 재무 데이터 로드 함수 (yfinance 연동)
 @st.cache_data
 def load_financial_data(ticker_code):
@@ -903,7 +903,71 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("📈 주식 투자 전략 시뮬레이터 및 백테스트 대시보드")
-st.write("머신러닝 롤링 예측 전략과 래리 윌리엄스 변동성 돌파 전략의 성과를 분석하는 인터랙티브 대시보드입니다.")
+st.write("다양한 퀀트 전략 및 머신러닝 모델의 성과를 분석하는 인터랙티브 대시보드입니다.")
+
+# 🔍 키워드 기반 종목 스캐너 (longBusinessSummary 필터링)
+with st.expander("🔍 키워드 기반 종목 스캐너 (투자 후보군 발굴)", expanded=False):
+    st.markdown("입력하신 키워드(예: `AI`, `Semiconductor`, `Automobile`, `Cloud`)가 기업 공식 영문 소개글에 포함된 우량 종목들을 찾아 PER 및 성장성 지표를 요약해 줍니다.")
+    
+    keyword = st.text_input("스캔할 영문 키워드 입력 (대소문자 무관)", "AI", key="scan_keyword")
+    
+    if st.button("🚀 종목 스캐닝 시작", use_container_width=True):
+        # 대상 대표 종목 리스트 (티커 및 한글명 매핑)
+        scan_pool = {
+            "AAPL": "애플", "MSFT": "마이크로소프트", "TSLA": "테슬라", "NVDA": "엔비디아",
+            "AMZN": "아마존", "GOOGL": "알파벳(구글)", "META": "메타", 
+            "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", 
+            "035420.KS": "네이버", "035720.KS": "카카오", "005380.KS": "현대차"
+        }
+        
+        found_stocks = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        import yfinance as yf
+        configure_yfinance_cache(yf)
+        
+        total_tickers = len(scan_pool)
+        for idx, (tkr, name) in enumerate(scan_pool.items()):
+            status_text.text(f"스캔 중: {name} ({tkr}) 데이터를 수집 중입니다... ({idx+1}/{total_tickers})")
+            progress_bar.progress((idx + 1) / total_tickers)
+            try:
+                ticker_obj = yf.Ticker(tkr)
+                info = ticker_obj.info
+                summary = info.get("longBusinessSummary", "").lower()
+                
+                if keyword.lower() in summary:
+                    # 성장률 백분율 포맷팅
+                    rev_growth = info.get('revenueGrowth')
+                    if rev_growth is not None:
+                        rev_growth_str = f"{rev_growth * 100:+.1f}%"
+                    else:
+                        rev_growth_str = "-"
+                        
+                    # PER 포맷팅
+                    pe_val = info.get('trailingPE')
+                    pe_str = f"{pe_val:.2f}배" if pe_val is not None else "-"
+                    
+                    found_stocks.append({
+                        "티커": tkr.replace(".KS", "").replace(".KQ", ""),
+                        "종목명": name,
+                        "섹터": info.get("sector", "-"),
+                        "PER": pe_str,
+                        "매출 성장률": rev_growth_str,
+                        "배당 수익률": f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-"
+                    })
+            except Exception:
+                continue
+                
+        progress_bar.empty()
+        status_text.empty()
+        
+        if found_stocks:
+            st.success(f"'{keyword}' 관련 키워드를 포함한 종목을 {len(found_stocks)}개 발견했습니다!")
+            st.dataframe(pd.DataFrame(found_stocks), use_container_width=True, hide_index=True)
+            st.caption("※ 발굴된 종목의 티커를 왼쪽 사이드바의 종목명 입력창에 입력하여 바로 백테스트를 실행해 보세요.")
+        else:
+            st.warning(f"대표 우량주 중에서 '{keyword}' 관련 사업 소개를 영위하는 종목을 찾지 못했습니다.")
 
 # 세션 상태 초기화 및 관리
 if 'run_backtest' not in st.session_state:
