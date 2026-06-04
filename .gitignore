@@ -1,0 +1,28 @@
+# [LOG: 20260604_1721]
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상환경
+.venv/
+venv/
+ENV/
+env/
+
+# 프로젝트 로컬 캐시
+.cache/
+
+# 에디터 설정
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS 관련 임시파일
+.DS_Store
+Thumbs.db
