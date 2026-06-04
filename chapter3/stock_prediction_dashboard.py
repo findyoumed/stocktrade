@@ -68,28 +68,58 @@ def resolve_ticker_input(ticker_input):
     return KOREAN_TICKER_ALIASES.get(key, ticker_input.strip())
 
 # [LOG: 20260604_1508]
-# 실시간 KIND API를 활용한 전 상장사 종목코드/종목명 동적 로딩 및 캐싱 기능 도입
+# 실시간 KIND 및 Naver ETF API를 활용한 전 상장사 및 ETF 통합 로딩 및 캐싱 기능 도입
 @st.cache_data(ttl=86400)
 def get_all_listed_stocks():
-    """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록을 가져옵니다. 
+    """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록 및 네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
     네트워크 장애 시 빈 DataFrame을 반환하여 로컬 백업 카탈로그로 유연하게 복원됩니다.
     """
     import requests
     from io import BytesIO
-    url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    
+    # 1. KIND 일반 상장 주식 로드
+    url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    df_stocks = pd.DataFrame()
     try:
-        res = requests.get(url, timeout=5)
-        # BytesIO와 cp949 인코딩 명시를 통해 한글 컬럼 깨짐 및 예외 발생을 원천 차단합니다.
-        df = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
-        df['종목코드'] = df['종목코드'].astype(str).str.zfill(6)
-        df['회사명'] = df['회사명'].str.strip()
-        return df[['회사명', '종목코드']]
+        res = requests.get(url_kind, timeout=5)
+        df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
+        df_stocks['종목코드'] = df_stocks['종목코드'].astype(str).str.zfill(6)
+        df_stocks['회사명'] = df_stocks['회사명'].str.strip()
+        df_stocks = df_stocks[['회사명', '종목코드']].rename(columns={'회사명': 'name', '종목코드': 'ticker'})
     except Exception:
+        pass
+
+    # 2. 네이버 금융 ETF 목록 로드 (배당plus, 고배당, S&P500 등 ETF 검색 지원)
+    url_etf = 'https://finance.naver.com/api/sise/etfItemList.nhn'
+    df_etfs = pd.DataFrame()
+    try:
+        res = requests.get(url_etf, timeout=5)
+        data = res.json()
+        etf_list = data.get('result', {}).get('etfItemList', [])
+        if etf_list:
+            temp_list = []
+            for item in etf_list:
+                temp_list.append({
+                    'name': item.get('itemname', '').strip(),
+                    'ticker': item.get('itemcode', '').strip().zfill(6)
+                })
+            df_etfs = pd.DataFrame(temp_list)
+    except Exception:
+        pass
+
+    # 3. 주식 및 ETF 병합
+    if df_stocks.empty and df_etfs.empty:
         return pd.DataFrame()
+    elif df_stocks.empty:
+        return df_etfs
+    elif df_etfs.empty:
+        return df_stocks
+    else:
+        return pd.concat([df_stocks, df_etfs], ignore_index=True)
 
 
 def search_local_tickers(query):
-    """부분 종목명/영문 별칭으로 로컬 카탈로그 및 KIND 상장 목록에서 검색 후보를 찾습니다."""
+    """부분 종목명/영문 별칭으로 로컬 카탈로그 및 KIND/Naver ETF 상장 목록에서 검색 후보를 찾습니다."""
     key = normalize_search_text(query)
     if not key:
         return []
@@ -105,14 +135,14 @@ def search_local_tickers(query):
         if any(key in value for value in normalized_values):
             matches.append({"ticker": ticker, "name": item["name"]})
 
-    # 2. KIND 실전 전 종목 실시간 검색 추가
+    # 2. KIND + Naver ETF 통합 목록 실시간 검색
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        # 회사명을 대소문자 구분 없이 부분 매칭
-        filtered = listed_df[listed_df['회사명'].str.lower().str.replace(" ", "").str.contains(key, na=False)]
+        # 회사명/ETF명을 대소문자 구분 없이, 공백 제거 후 부분 매칭
+        filtered = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(key, na=False)]
         for _, row in filtered.iterrows():
-            ticker = row['종목코드']
-            name = row['회사명']
+            ticker = row['ticker']
+            name = row['name']
             if not any(m['ticker'] == ticker for m in matches):
                 matches.append({"ticker": ticker, "name": name})
 
@@ -120,20 +150,24 @@ def search_local_tickers(query):
 
 
 def get_ticker_name(ticker_code):
-    """종목 코드를 받아 종목명을 반환합니다. (KIND DB 조회 -> yfinance -> pykrx 순)"""
+    """종목 코드를 받아 종목명을 반환합니다. (KIND/Naver ETF DB 조회 -> yfinance -> pykrx 순)"""
     ticker_code = ticker_code.strip()
     if not ticker_code:
+        return UNKNOWN_TICKER_NAME
+    
+    # 영문 티커 기호(미국 주식)이거나 6자리 숫자 종목코드(한국 주식)가 아니면 즉시 차단 (한글 검색어 패스 방지)
+    if not (ticker_code.isalnum() and (ticker_code.isalpha() or (len(ticker_code) == 6 and ticker_code.isdigit()))):
         return UNKNOWN_TICKER_NAME
     
     if ticker_code in LOCAL_TICKER_CATALOG:
         return LOCAL_TICKER_CATALOG[ticker_code]["name"]
         
-    # 1. KIND 전체 상장사 목록 검색 (가장 안정적)
+    # 1. KIND + Naver ETF 전체 상장사 목록 검색 (가장 안정적)
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        match = listed_df[listed_df['종목코드'] == ticker_code]
+        match = listed_df[listed_df['ticker'] == ticker_code]
         if not match.empty:
-            return match.iloc[0]['회사명']
+            return match.iloc[0]['name']
 
     # 2. 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
     if ticker_code.isalpha():
