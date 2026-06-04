@@ -618,7 +618,7 @@ def calculate_combined_monthly_stats(ml_df, vbt_df):
     final_df = merged[['년-월', '머신러닝 수익률 (%)', '변동성 돌파 수익률 (%)', '단순 보유 수익률 (%)', '돌파 매수 횟수 (회)', '머신러닝 오차 (원)']]
     return final_df
 
-# [LOG: 20260604_1705]
+# [LOG: 20260604_1707]
 # 10. 이동평균선 골든크로스 전략 백테스트 함수
 def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct):
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
@@ -840,10 +840,10 @@ strategy_choice = st.sidebar.radio(
     options=[
         "머신러닝 롤링 예측 전략",
         "변동성 돌파 전략 (Larry Williams)",
+        "두 전략 통합 비교",
         "이동평균선 골든크로스 전략",
         "RSI 과매도 반등 전략",
-        "볼린저 밴드 반등 전략",
-        "두 전략 통합 비교"
+        "볼린저 밴드 반등 전략"
     ]
 )
 
