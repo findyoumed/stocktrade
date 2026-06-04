@@ -80,6 +80,73 @@ FINANCIALS_KR = {
     'Free Cash Flow': '잉여현금흐름'
 }
 
+INDEX_ETF_CATALOG = {
+    "미국 대표지수 추종": [
+        {"지수": "S&P 500", "티커": "SPY", "운용사": "State Street Global Advisors", "종목명": "SPDR S&P 500 ETF Trust", "의미": "미국 대형주 대표 지수 추종"},
+        {"지수": "S&P 500", "티커": "IVV", "운용사": "BlackRock iShares", "종목명": "iShares Core S&P 500 ETF", "의미": "미국 대형주 대표 지수 추종"},
+        {"지수": "S&P 500", "티커": "VOO", "운용사": "Vanguard", "종목명": "Vanguard S&P 500 ETF", "의미": "미국 대형주 대표 지수 추종"},
+        {"지수": "NASDAQ 100", "티커": "QQQ", "운용사": "Invesco", "종목명": "Invesco QQQ Trust", "의미": "미국 대형 기술주 중심 지수 추종"},
+        {"지수": "NASDAQ 100", "티커": "QQQM", "운용사": "Invesco", "종목명": "Invesco NASDAQ 100 ETF", "의미": "미국 대형 기술주 중심 지수 추종"},
+        {"지수": "Dow Jones Industrial Average", "티커": "DIA", "운용사": "State Street Global Advisors", "종목명": "SPDR Dow Jones Industrial Average ETF", "의미": "미국 대표 우량 대형주 지수 추종"},
+        {"지수": "Dow Jones U.S. Index", "티커": "IYY", "운용사": "BlackRock iShares", "종목명": "iShares Dow Jones U.S. ETF", "의미": "미국 대형주와 중형주 중심의 Dow Jones U.S. Index 추종"},
+        {"지수": "Russell 2000", "티커": "IWM", "운용사": "BlackRock iShares", "종목명": "iShares Russell 2000 ETF", "의미": "미국 소형주 지수 추종"},
+        {"지수": "Russell 2000", "티커": "VTWO", "운용사": "Vanguard", "종목명": "Vanguard Russell 2000 ETF", "의미": "미국 소형주 지수 추종"},
+        {"지수": "Russell 2000 기반", "티커": "OMFS", "운용사": "Invesco", "종목명": "Invesco Russell 2000 Dynamic Multifactor ETF", "의미": "Russell 2000 기반 미국 소형주 멀티팩터 전략 추종"},
+        {"지수": "미국 광범위 시장", "티커": "VTI", "운용사": "Vanguard", "종목명": "Vanguard Total Stock Market ETF", "의미": "미국 전체 주식시장 추종"},
+        {"지수": "미국 광범위 시장", "티커": "ITOT", "운용사": "BlackRock iShares", "종목명": "iShares Core S&P Total U.S. Stock Market ETF", "의미": "미국 전체 주식시장 추종"},
+        {"지수": "미국 광범위 시장", "티커": "SCHB", "운용사": "Schwab", "종목명": "Schwab U.S. Broad Market ETF", "의미": "미국 전체 주식시장 추종"},
+        {"지수": "S&P Composite 1500", "티커": "SPTM", "운용사": "State Street Global Advisors", "종목명": "SPDR Portfolio S&P 1500 Composite Stock Market ETF", "의미": "미국 대형주, 중형주, 소형주를 포함한 광범위한 미국 주식시장 추종"},
+    ],
+    "글로벌 지수 ETF": [
+        {"지수": "전세계 주식", "티커": "VT", "운용사": "Vanguard", "종목명": "Vanguard Total World Stock ETF", "의미": "선진국과 신흥국을 포함한 전세계 주식시장 추종"},
+        {"지수": "전세계 주식", "티커": "ACWI", "운용사": "BlackRock iShares", "종목명": "iShares MSCI ACWI ETF", "의미": "MSCI ACWI 기반 전세계 주식시장 추종"},
+        {"지수": "전세계 주식", "티커": "SPGM", "운용사": "State Street Global Advisors", "종목명": "SPDR Portfolio MSCI Global Stock Market ETF", "의미": "전세계 주식시장 광범위 분산 추종"},
+        {"지수": "미국 제외 전세계", "티커": "VXUS", "운용사": "Vanguard", "종목명": "Vanguard Total International Stock ETF", "의미": "미국을 제외한 글로벌 주식시장 추종"},
+        {"지수": "미국 제외 전세계", "티커": "IXUS", "운용사": "BlackRock iShares", "종목명": "iShares Core MSCI Total International Stock ETF", "의미": "미국 제외 선진국과 신흥국 주식시장 추종"},
+        {"지수": "미국 제외 선진국", "티커": "VEA", "운용사": "Vanguard", "종목명": "Vanguard FTSE Developed Markets ETF", "의미": "미국을 제외한 선진국 주식시장 추종"},
+        {"지수": "신흥국", "티커": "VWO", "운용사": "Vanguard", "종목명": "Vanguard FTSE Emerging Markets ETF", "의미": "신흥국 주식시장 추종"},
+        {"지수": "글로벌 대형주", "티커": "IOO", "운용사": "BlackRock iShares", "종목명": "iShares Global 100 ETF", "의미": "글로벌 대형 우량주 100개 기업 추종"},
+    ],
+    "미국 섹터 ETF (11개)": [
+        {"티커": "XLB", "종목명": "Materials Select Sector SPDR Fund", "구분": "소재", "의미": "미국 소재 섹터 추종"},
+        {"티커": "XLC", "종목명": "Communication Services Select Sector SPDR Fund", "구분": "커뮤니케이션", "의미": "미국 커뮤니케이션 서비스 섹터 추종"},
+        {"티커": "XLY", "종목명": "Consumer Discretionary Select Sector SPDR Fund", "구분": "경기소비재", "의미": "미국 경기소비재 섹터 추종"},
+        {"티커": "XLP", "종목명": "Consumer Staples Select Sector SPDR Fund", "구분": "필수소비재", "의미": "미국 필수소비재 섹터 추종"},
+        {"티커": "XLE", "종목명": "Energy Select Sector SPDR Fund", "구분": "에너지", "의미": "미국 에너지 섹터 추종"},
+        {"티커": "XLF", "종목명": "Financial Select Sector SPDR Fund", "구분": "금융", "의미": "미국 금융 섹터 추종"},
+        {"티커": "XLV", "종목명": "Health Care Select Sector SPDR Fund", "구분": "헬스케어", "의미": "미국 헬스케어 섹터 추종"},
+        {"티커": "XLI", "종목명": "Industrial Select Sector SPDR Fund", "구분": "산업재", "의미": "미국 산업재 섹터 추종"},
+        {"티커": "XLRE", "종목명": "Real Estate Select Sector SPDR Fund", "구분": "부동산", "의미": "미국 부동산 섹터 추종"},
+        {"티커": "XLK", "종목명": "Technology Select Sector SPDR Fund", "구분": "기술", "의미": "미국 기술 섹터 추종"},
+        {"티커": "XLU", "종목명": "Utilities Select Sector SPDR Fund", "구분": "유틸리티", "의미": "미국 유틸리티 섹터 추종"},
+    ],
+    "위험회피 심리": [
+        {"티커": "TLT", "종목명": "iShares 20+ Year Treasury Bond ETF", "구분": "장기국채", "의미": "위험회피 때 선호되는 미국 장기국채 추종"},
+        {"티커": "IEF", "종목명": "iShares 7-10 Year Treasury Bond ETF", "구분": "중기국채", "의미": "미국 중기국채 추종"},
+        {"티커": "SHY", "종목명": "iShares 1-3 Year Treasury Bond ETF", "구분": "단기국채", "의미": "미국 단기국채 추종"},
+        {"티커": "GLD", "종목명": "SPDR Gold Shares", "구분": "금", "의미": "대표 안전자산인 금 가격 추종"},
+        {"티커": "UUP", "종목명": "Invesco DB US Dollar Index Bullish Fund", "구분": "달러", "의미": "미국 달러 강세 추종"},
+    ],
+    "한국 대표 지수 ETF": [
+        {"지수": "KOSPI 200", "티커": "069500", "운용사": "삼성자산운용", "종목명": "KODEX 200", "의미": "한국 대형주 대표, 시장 전체 흐름 확인용"},
+        {"지수": "KOSPI 200", "티커": "102110", "운용사": "미래에셋자산운용", "종목명": "TIGER 200", "의미": "한국 대형주 대표, 시장 전체 흐름 확인용"},
+        {"지수": "KOSPI 200", "티커": "152100", "운용사": "KB자산운용", "종목명": "KBSTAR 200", "의미": "한국 대형주 대표, 시장 전체 흐름 확인용"},
+        {"지수": "KOSDAQ 150", "티커": "229200", "운용사": "삼성자산운용", "종목명": "KODEX 코스닥150", "의미": "한국 성장주 대표, 코스닥 시장 흐름 확인용"},
+        {"지수": "KOSDAQ 150", "티커": "232080", "운용사": "미래에셋자산운용", "종목명": "TIGER 코스닥150", "의미": "한국 성장주 대표, 코스닥 시장 흐름 확인용"},
+        {"지수": "KOSPI 200 레버리지", "티커": "122630", "운용사": "삼성자산운용", "종목명": "KODEX 레버리지", "의미": "위험선호 심리 확인용"},
+        {"지수": "KOSPI 200 인버스", "티커": "114800", "운용사": "삼성자산운용", "종목명": "KODEX 인버스", "의미": "위험회피 심리 확인용"},
+    ],
+    "한국 주요 섹터 ETF": [
+        {"티커": "091160", "종목명": "KODEX 반도체", "구분": "반도체", "의미": "한국 반도체 섹터 추종"},
+        {"티커": "091230", "종목명": "TIGER 반도체", "구분": "반도체", "의미": "한국 반도체 섹터 추종"},
+        {"티커": "305540", "종목명": "TIGER 2차전지테마", "구분": "2차전지", "의미": "한국 2차전지 테마 추종"},
+        {"티커": "305720", "종목명": "KODEX 2차전지산업", "구분": "2차전지", "의미": "한국 2차전지 산업 추종"},
+        {"티커": "228800", "종목명": "TIGER 자동차", "구분": "자동차", "의미": "한국 자동차 섹터 추종"},
+        {"티커": "091170", "종목명": "KODEX 은행", "구분": "은행", "의미": "한국 은행 섹터 추종"},
+        {"티커": "244580", "종목명": "KODEX 바이오", "구분": "바이오", "의미": "한국 바이오 섹터 추종"},
+    ],
+}
+
 
 def configure_yfinance_cache(yf):
     """yfinance가 쓰는 로컬 캐시를 프로젝트 내부로 고정합니다."""
@@ -951,110 +1018,58 @@ if 'scanner_results' not in st.session_state:
     st.session_state['scanner_results'] = None
 if 'scanner_keyword' not in st.session_state:
     st.session_state['scanner_keyword'] = ""
+if 'target_ticker' not in st.session_state:
+    st.session_state['target_ticker'] = ""
 
-# 🔍 키워드 기반 종목 스캐너 결과 표시 영역 (오른쪽 메인 화면)
+# 🔍 지수/ETF 리스트 결과 표시 영역 (오른쪽 메인 화면)
 if st.session_state['scanner_results'] is not None:
-    with st.expander(f"🔍 '{st.session_state['scanner_keyword']}' 관련 종목 발굴 결과 ({len(st.session_state['scanner_results'])}개 발견)", expanded=True):
-        st.dataframe(pd.DataFrame(st.session_state['scanner_results']), use_container_width=True, hide_index=True)
+    with st.expander(f"🔍 {st.session_state['scanner_keyword']} 결과 ({len(st.session_state['scanner_results'])}개)", expanded=True):
+        df_results = pd.DataFrame(st.session_state['scanner_results'])
+        event = st.dataframe(
+            df_results,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+        if len(event.selection.rows) > 0:
+            selected_idx = event.selection.rows[0]
+            if "티커" in df_results.columns:
+                selected_ticker = str(df_results.iloc[selected_idx]["티커"])
+                if st.session_state.get("target_ticker") != selected_ticker:
+                    st.session_state["target_ticker"] = selected_ticker
+                    st.session_state["run_backtest"] = True
+                    st.rerun()
+
         c1, c2 = st.columns([6, 1])
-        c1.caption("※ 발굴된 종목의 티커를 왼쪽 사이드바의 종목명 입력창에 입력하여 바로 백테스트를 실행해 보세요.")
+        c1.caption("※ 표에서 **가장 왼쪽의 체크박스(☑️)**를 클릭하면 왼쪽 사이드바의 종목명 입력창에 티커가 자동 입력됩니다.")
         if c2.button("결과 닫기", key="close_scanner_results", use_container_width=True):
             st.session_state['scanner_results'] = None
             st.session_state['scanner_keyword'] = ""
             st.rerun()
 
 # 사이드바 설정
-# 🔍 키워드 기반 종목 스캐너 (사이드바 맨 위 배치)
-with st.sidebar.expander("🔍 키워드 기반 종목 스캐너 (종목 발굴)", expanded=False):
-    st.markdown("<small>입력 키워드(예: `AI`, `Cloud`, `Semiconductor`)가 설명글에 포함된 우량 종목들을 찾아 줍니다.</small>", unsafe_allow_html=True)
+# 🔍 지수/ETF 리스트 (사이드바 맨 위 배치)
+with st.sidebar.expander("🔍 지수/ETF 카테고리 검색", expanded=False):
     with st.form(key="scanner_form_sb", clear_on_submit=False):
-        keyword = st.text_input("스캔할 영문 키워드 입력", "AI", key="scan_keyword_sb")
-        submit_btn = st.form_submit_button("🚀 종목 스캐닝 시작", use_container_width=True)
+        etf_category = st.selectbox("분류 선택", options=list(INDEX_ETF_CATALOG.keys()))
+        submit_btn = st.form_submit_button("목록 보기", use_container_width=True)
     
     if submit_btn:
-        scan_pool = {
-            "AAPL": "애플", "MSFT": "마이크로소프트", "TSLA": "테슬라", "NVDA": "엔비디아",
-            "AMZN": "아마존", "GOOGL": "구글", "META": "메타", 
-            "005930.KS": "삼성전자", "000660.KS": "SK하이닉스", 
-            "035420.KS": "네이버", "035720.KS": "카카오", "005380.KS": "현대차"
-        }
-        
-        found_stocks = []
-        progress_bar = st.sidebar.progress(0)
-        status_text = st.sidebar.empty()
-        
-        import yfinance as yf
-        configure_yfinance_cache(yf)
-        
-        total_tickers = len(scan_pool)
-        for idx, (tkr, name) in enumerate(scan_pool.items()):
-            status_text.markdown(f"<small>스캔 중: {name} ({idx+1}/{total_tickers})</small>", unsafe_allow_html=True)
-            progress_bar.progress((idx + 1) / total_tickers)
-            try:
-                ticker_obj = yf.Ticker(tkr)
-                info = ticker_obj.info
-                summary = info.get("longBusinessSummary", "").lower()
-                
-                if keyword.lower() in summary:
-                    # 성장률 백분율 포맷팅
-                    rev_growth = info.get('revenueGrowth')
-                    rev_growth_str = f"{rev_growth * 100:+.1f}%" if rev_growth is not None else "-"
-                        
-                    # PER 포맷팅
-                    pe_val = info.get('trailingPE')
-                    pe_str = f"{pe_val:.1f}배" if pe_val is not None else "-"
-                    
-                    # PBR 및 ROE 포맷팅
-                    pbr_val = info.get('priceToBook')
-                    pbr_str = f"{pbr_val:.2f}배" if pbr_val is not None else "-"
-                    
-                    roe_val = info.get('returnOnEquity')
-                    roe_str = f"{roe_val * 100:+.1f}%" if roe_val is not None else "-"
-                    
-                    found_stocks.append({
-                        "티커": tkr.replace(".KS", "").replace(".KQ", ""),
-                        "종목명": name,
-                        "섹터": info.get("sector", "-"),
-                        "PER": pe_str,
-                        "PBR": pbr_str,
-                        "ROE": roe_str,
-                        "매출 성장률": rev_growth_str,
-                        "배당 수익률": f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-"
-                    })
-            except Exception:
-                continue
-                
-        progress_bar.empty()
-        status_text.empty()
-        
+        found_stocks = INDEX_ETF_CATALOG.get(etf_category, [])
         if found_stocks:
-            st.sidebar.success(f"'{keyword}' 검색 완료! 우측 화면을 확인하세요.")
+            st.sidebar.success("지수/ETF 리스트 조회 완료! 우측 화면을 확인하세요.")
             st.session_state['scanner_results'] = found_stocks
-            st.session_state['scanner_keyword'] = keyword
+            st.session_state['scanner_keyword'] = etf_category
             st.rerun()
         else:
-            st.sidebar.warning(f"'{keyword}' 관련 종목을 찾지 못했습니다.")
+            st.sidebar.warning("선택한 분류의 지수/ETF를 찾지 못했습니다.")
             st.session_state['scanner_results'] = None
             st.session_state['scanner_keyword'] = ""
             st.rerun()
 
-st.sidebar.header("⚙️ 전략 및 파라미터 설정")
-
-# 1. 라디오 버튼을 사용하여 전략 및 통합 모드 선택 (3개 옵션 제공)
-strategy_choice = st.sidebar.radio(
-    "💡 분석할 전략 선택",
-    options=[
-        "머신러닝 롤링 예측 전략",
-        "변동성 돌파 전략 (Larry Williams)",
-        "두 전략 통합 비교",
-        "이동평균선 골든크로스 전략",
-        "RSI 과매도 반등 전략",
-        "볼린저 밴드 반등 전략"
-    ]
-)
-
-# 2. 공통 종목 코드 입력
-ticker_input = st.sidebar.text_input("종목 코드/종목명 입력 (예: 005930, 삼성전자, 360750)", "")
+# 🔍 공통 종목 코드 직접 입력
+ticker_input = st.sidebar.text_input("🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)", key="target_ticker")
 ticker_matches = search_local_tickers(ticker_input)
 if len(ticker_matches) > 1:
     selected_match_label = st.sidebar.selectbox(
@@ -1092,6 +1107,21 @@ else:
 run_button_clicked = st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True)
 if run_button_clicked:
     st.session_state['run_backtest'] = True
+
+st.sidebar.header("⚙️ 전략 및 파라미터 설정")
+
+# 1. 라디오 버튼을 사용하여 전략 및 통합 모드 선택 (3개 옵션 제공)
+strategy_choice = st.sidebar.radio(
+    "💡 분석할 전략 선택",
+    options=[
+        "머신러닝 롤링 예측 전략",
+        "변동성 돌파 전략 (Larry Williams)",
+        "두 전략 통합 비교",
+        "이동평균선 골든크로스 전략",
+        "RSI 과매도 반등 전략",
+        "볼린저 밴드 반등 전략"
+    ]
+)
 
 # 3. 공통 기간 설정 (종료 날짜 기본값을 실행 당일 오늘 날짜로 동적 자동 입력)
 start_date = st.sidebar.text_input("시작 날짜 (YYYYMMDD)", "20240101")
@@ -1187,8 +1217,8 @@ elif not is_data_cached:
             st.session_state['loaded_start'] = start_date
             st.session_state['loaded_end'] = end_date
             # 종목이나 날짜만 바뀐 경우에는 이전 실행 상태를 리셋하되,
-            # 이번 rerun에서 버튼을 누른 경우에는 즉시 백테스트가 이어지도록 유지
-            if not run_button_clicked:
+            # 버튼 실행 또는 리스트 행 선택으로 들어온 실행 요청은 유지
+            if not run_button_clicked and not st.session_state.get('run_backtest', False):
                 st.session_state['run_backtest'] = False
         else:
             st.session_state['stock_data'] = pd.DataFrame()
