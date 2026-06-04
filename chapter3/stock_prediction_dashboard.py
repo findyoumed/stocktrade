@@ -69,6 +69,18 @@ LOCAL_TICKER_CATALOG = {
 }
 
 
+FINANCIALS_KR = {
+    'Total Revenue': '총수익(매출액)', 
+    'Operating Income': '영업이익', 
+    'Net Income': '당기순이익',
+    'Total Assets': '총자산', 
+    'Total Liabilities Net Minority Interest': '총부채', 
+    'Stockholders Equity': '자본총계',
+    'Operating Cash Flow': '영업활동현금흐름', 
+    'Free Cash Flow': '잉여현금흐름'
+}
+
+
 def configure_yfinance_cache(yf):
     """yfinance가 쓰는 로컬 캐시를 프로젝트 내부로 고정합니다."""
     cache_dir = Path(__file__).resolve().parents[1] / ".cache" / "yfinance"
@@ -392,6 +404,72 @@ def load_data(start_date, end_date, ticker_code):
         pass
         
     return pd.DataFrame()
+
+
+# [LOG: 20260604_1737]
+# 2-2. 주요 재무 데이터 로드 함수 (yfinance 연동)
+@st.cache_data
+def load_financial_data(ticker_code):
+    """yfinance를 활용하여 해당 종목의 연간 재무 정보를 로드합니다."""
+    import yfinance as yf
+    configure_yfinance_cache(yf)
+    
+    # 한국 주식 코드(6자리 숫자)의 경우 접미사 처리
+    tickers_to_try = [ticker_code]
+    if len(ticker_code) == 6 and ticker_code.isdigit():
+        tickers_to_try = [f"{ticker_code}.KS", f"{ticker_code}.KQ"]
+        
+    for ticker_symbol in tickers_to_try:
+        try:
+            tic = yf.Ticker(ticker_symbol)
+            # 연간 재무 상태표 (balance_sheet) & 손익계산서 (financials) & 현금흐름표 (cashflow)
+            bs = tic.balance_sheet
+            fin = tic.financials
+            cf = tic.cashflow
+            
+            combined_data = {}
+            
+            # balance_sheet 항목
+            if bs is not None and not bs.empty:
+                for item in ['Total Assets', 'Total Liabilities Net Minority Interest', 'Stockholders Equity']:
+                    if item in bs.index:
+                        combined_data[item] = bs.loc[item]
+            
+            # financials 항목
+            if fin is not None and not fin.empty:
+                for item in ['Total Revenue', 'Operating Income', 'Net Income']:
+                    if item in fin.index:
+                        combined_data[item] = fin.loc[item]
+                        
+            # cashflow 항목
+            if cf is not None and not cf.empty:
+                for item in ['Operating Cash Flow', 'Free Cash Flow']:
+                    if item in cf.index:
+                        combined_data[item] = cf.loc[item]
+            
+            if combined_data:
+                # 데이터프레임 빌드 및 전치
+                df_fin = pd.DataFrame(combined_data)
+                
+                # 만약 칼럼이 Datetime 인덱스라면 연도로 포맷
+                formatted_cols = []
+                for col in df_fin.columns:
+                    try:
+                        formatted_cols.append(pd.to_datetime(col).strftime('%Y년'))
+                    except Exception:
+                        formatted_cols.append(str(col))
+                df_fin.columns = formatted_cols
+                
+                # 한글 매핑 적용하여 리인덱스
+                df_fin = df_fin.rename(index=FINANCIALS_KR)
+                
+                # 전치해서 반환 (행: 년도, 열: 재무항목)
+                return df_fin.T
+        except Exception:
+            continue
+            
+    return pd.DataFrame()
+
 
 # 3. 머신러닝 피처 및 타겟 전처리 함수
 def prepare_features(df):
@@ -1520,5 +1598,25 @@ else:
                     display_stats['돌파 매수 횟수 (회)'] = display_stats['돌파 매수 횟수 (회)'].map('{:,.0f}회'.format)
                     display_stats['머신러닝 오차 (원)'] = display_stats['머신러닝 오차 (원)'].map('{:,.0f}원'.format)
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)
+
+            # --- 구조 5: 주요 재무 정보 표 노출 (yfinance 연동) ---
+            st.divider()
+            st.subheader(f"🏢 {ticker_name} ({ticker_code}) 주요 재무 정보")
+            with st.spinner("재무 정보 데이터를 불러오는 중..."):
+                df_financials = load_financial_data(ticker_code)
+                if not df_financials.empty:
+                    display_fin = df_financials.copy()
+                    
+                    # 수치형 값 예쁘게 쉼표 포맷팅
+                    for col in display_fin.columns:
+                        try:
+                            display_fin[col] = display_fin[col].map(lambda x: f"{x:,.0f}" if pd.notnull(x) and not isinstance(x, str) else x)
+                        except Exception:
+                            pass
+                    
+                    st.dataframe(display_fin, use_container_width=True)
+                    st.caption("※ 정보 제공: Yahoo Finance (연간 기준 재무 데이터)")
+                else:
+                    st.info("이 종목에 대한 연간 재무 정보(재무상태표/손익계산서/현금흐름표)를 불러올 수 없습니다.")
     else:
         st.info("👈 왼쪽 사이드바에서 [백테스트 실행하기] 버튼을 눌러주세요!")
