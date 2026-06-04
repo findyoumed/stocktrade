@@ -1,5 +1,5 @@
 @echo off
-:: [LOG: 20260604_1223]
+:: [LOG: 20260604_1232]
 echo ==========================================
 echo   Git Push Helper Script
 echo ==========================================
@@ -9,14 +9,6 @@ echo [Step 1] Checking git status...
 git status
 echo.
 
-set /p confirm="Do you want to upload these files to GitHub? (Y/N): "
-if /i "%confirm%" neq "Y" (
-    echo.
-    echo Upload canceled.
-    goto end
-)
-
-echo.
 set /p msg="Enter commit message (default: update): "
 if "%msg%"=="" (
     set msg="update"
@@ -37,5 +29,4 @@ echo ==========================================
 echo   GitHub Upload Completed!
 echo ==========================================
 
-:end
 pause
