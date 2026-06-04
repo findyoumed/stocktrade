@@ -1025,24 +1025,40 @@ if 'target_ticker' not in st.session_state:
 if st.session_state['scanner_results'] is not None:
     with st.expander(f"🔍 {st.session_state['scanner_keyword']} 결과 ({len(st.session_state['scanner_results'])}개)", expanded=True):
         df_results = pd.DataFrame(st.session_state['scanner_results'])
+
+        def apply_scanner_ticker(selected_ticker):
+            st.session_state["target_ticker"] = selected_ticker
+            st.session_state["run_backtest"] = True
+            st.rerun()
+
         event = st.dataframe(
             df_results,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
+            key="scanner_results_table",
         )
         if len(event.selection.rows) > 0:
             selected_idx = event.selection.rows[0]
             if "티커" in df_results.columns:
                 selected_ticker = str(df_results.iloc[selected_idx]["티커"])
                 if st.session_state.get("target_ticker") != selected_ticker:
-                    st.session_state["target_ticker"] = selected_ticker
-                    st.session_state["run_backtest"] = True
-                    st.rerun()
+                    apply_scanner_ticker(selected_ticker)
+
+        if "티커" in df_results.columns:
+            ticker_options = [str(ticker) for ticker in df_results["티커"].dropna().tolist()]
+            selected_label = st.selectbox(
+                "티커 선택",
+                options=ticker_options,
+                format_func=lambda ticker: f"{ticker} - {df_results.loc[df_results['티커'].astype(str) == ticker, '종목명'].iloc[0]}" if "종목명" in df_results.columns else ticker,
+                key="scanner_ticker_selectbox",
+            )
+            if st.button("선택한 티커 적용", key="apply_scanner_ticker", use_container_width=True):
+                apply_scanner_ticker(selected_label)
 
         c1, c2 = st.columns([6, 1])
-        c1.caption("※ 표에서 **가장 왼쪽의 체크박스(☑️)**를 클릭하면 왼쪽 사이드바의 종목명 입력창에 티커가 자동 입력됩니다.")
+        c1.caption("※ 표 행 선택이 안 될 때는 위의 티커 선택 상자에서 종목을 고른 뒤 적용하세요.")
         if c2.button("결과 닫기", key="close_scanner_results", use_container_width=True):
             st.session_state['scanner_results'] = None
             st.session_state['scanner_keyword'] = ""
