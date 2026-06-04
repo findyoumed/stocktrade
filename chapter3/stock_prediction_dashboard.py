@@ -14,6 +14,41 @@ UNKNOWN_TICKER_NAME = "알 수 없는 종목"
 INVALID_TICKER_HINTS = {
     "396580": "ACE 미국30년국채액티브(H)의 종목코드는 453850입니다."
 }
+KOREAN_TICKER_ALIASES = {
+    "삼성전자": "005930",
+    "samsungelectronics": "005930",
+    "samsungelec": "005930",
+}
+LOCAL_TICKER_CATALOG = {
+    "005930": {"name": "삼성전자", "aliases": ["Samsung Electronics", "SamsungElec"]},
+    "005935": {"name": "삼성전자우", "aliases": ["Samsung Electronics Preferred"]},
+    "006400": {"name": "삼성SDI", "aliases": ["Samsung SDI"]},
+    "006405": {"name": "삼성SDI우", "aliases": ["Samsung SDI Preferred"]},
+    "207940": {"name": "삼성바이오로직스", "aliases": ["Samsung Biologics"]},
+    "028260": {"name": "삼성물산", "aliases": ["Samsung C&T"]},
+    "02826K": {"name": "삼성물산우B", "aliases": ["Samsung C&T Preferred"]},
+    "018260": {"name": "삼성에스디에스", "aliases": ["Samsung SDS"]},
+    "032830": {"name": "삼성생명", "aliases": ["Samsung Life"]},
+    "000810": {"name": "삼성화재", "aliases": ["Samsung Fire & Marine"]},
+    "000815": {"name": "삼성화재우", "aliases": ["Samsung Fire & Marine Preferred"]},
+    "029780": {"name": "삼성카드", "aliases": ["Samsung Card"]},
+    "016360": {"name": "삼성증권", "aliases": ["Samsung Securities"]},
+    "010140": {"name": "삼성중공업", "aliases": ["Samsung Heavy Industries"]},
+    "010145": {"name": "삼성중공우", "aliases": ["Samsung Heavy Industries Preferred"]},
+    "006660": {"name": "삼성공조", "aliases": ["Samsung Climate Control"]},
+    "448730": {"name": "삼성FN리츠", "aliases": ["Samsung FN REIT"]},
+    "360750": {"name": "TIGER 미국S&P500", "aliases": []},
+    "379800": {"name": "KODEX 미국S&P500TR", "aliases": []},
+    "365000": {"name": "ACE 미국S&P500", "aliases": []},
+    "314250": {"name": "KODEX 미국나스닥100TR", "aliases": []},
+    "133690": {"name": "TIGER 미국나스닥100", "aliases": []},
+    "252670": {"name": "KODEX 200선물인버스2X", "aliases": []},
+    "114800": {"name": "KODEX 인버스", "aliases": []},
+    "122630": {"name": "KODEX 레버리지", "aliases": []},
+    "453850": {"name": "ACE 미국30년국채액티브(H)", "aliases": []},
+    "476560": {"name": "KODEX 미국30년국채액티브(H)", "aliases": []},
+    "458250": {"name": "TIGER 미국30년국채액티브(H)", "aliases": []},
+}
 
 
 def configure_yfinance_cache(yf):
@@ -22,6 +57,34 @@ def configure_yfinance_cache(yf):
     cache_dir.mkdir(parents=True, exist_ok=True)
     yf.set_tz_cache_location(str(cache_dir))
 
+
+def normalize_search_text(value):
+    return "".join(value.strip().lower().replace("-", " ").split())
+
+
+def resolve_ticker_input(ticker_input):
+    """회사명/별칭 입력을 실제 조회용 종목코드로 변환합니다."""
+    key = normalize_search_text(ticker_input)
+    return KOREAN_TICKER_ALIASES.get(key, ticker_input.strip())
+
+
+def search_local_tickers(query):
+    """부분 종목명/영문 별칭으로 로컬 카탈로그에서 후보를 찾습니다."""
+    key = normalize_search_text(query)
+    if not key:
+        return []
+
+    matches = []
+    for ticker, item in LOCAL_TICKER_CATALOG.items():
+        searchable_values = [ticker, item["name"], *item.get("aliases", [])]
+        normalized_values = [normalize_search_text(value) for value in searchable_values]
+        if any(key == value for value in normalized_values):
+            return [{"ticker": ticker, "name": item["name"]}]
+        if any(key in value for value in normalized_values):
+            matches.append({"ticker": ticker, "name": item["name"]})
+
+    return matches
+
 # 1. 종목 이름 조회 함수 (pykrx와 yfinance를 모두 활용하여 미국 주식 및 국내 ETF 지원)
 def get_ticker_name(ticker_code):
     """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자, TLT -> iShares 20+ Year Treasury Bond ETF)"""
@@ -29,22 +92,8 @@ def get_ticker_name(ticker_code):
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
     
-    etf_map = {
-        "360750": "TIGER 미국S&P500",
-        "379800": "KODEX 미국S&P500TR",
-        "365000": "ACE 미국S&P500",
-        "314250": "KODEX 미국나스닥100TR",
-        "133690": "TIGER 미국나스닥100",
-        "252670": "KODEX 200선물인버스2X",
-        "114800": "KODEX 인버스",
-        "122630": "KODEX 레버리지",
-        "453850": "ACE 미국30년국채액티브(H)",  # 국내상장 TLT 추종 ETF
-        "476560": "KODEX 미국30년국채액티브(H)", # 국내상장 TLT 추종 ETF
-        "458250": "TIGER 미국30년국채액티브(H)"  # 국내상장 TLT 추종 ETF
-    }
-    
-    if ticker_code in etf_map:
-        return etf_map[ticker_code]
+    if ticker_code in LOCAL_TICKER_CATALOG:
+        return LOCAL_TICKER_CATALOG[ticker_code]["name"]
         
     # 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
     if ticker_code.isalpha():
@@ -119,7 +168,7 @@ def load_data(start_date, end_date, ticker_code):
         pass
         
     # 2차 시도: pykrx 데이터가 비어있을 경우 yfinance의 한국 소스(.KS)로 백업 다운로드
-    if df.empty and len(ticker_code) == 6 and ticker_code.isdigit():
+    if df.empty and len(ticker_code) == 6 and ticker_code.isalnum():
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
@@ -405,15 +454,34 @@ strategy_choice = st.sidebar.radio(
 )
 
 # 2. 공통 종목 코드 입력
-ticker_code = st.sidebar.text_input("종목 코드 입력 (예: 360750, 453850, TLT)", "360750")
+ticker_input = st.sidebar.text_input("종목 코드/종목명 입력 (예: 005930, 삼성전자, 453850, TLT)", "360750")
+ticker_matches = search_local_tickers(ticker_input)
+if len(ticker_matches) > 1:
+    selected_match_label = st.sidebar.selectbox(
+        "검색된 종목 중 선택",
+        options=[f"{match['name']} ({match['ticker']})" for match in ticker_matches],
+        index=0,
+    )
+    selected_match_index = [f"{match['name']} ({match['ticker']})" for match in ticker_matches].index(selected_match_label)
+    ticker_code = ticker_matches[selected_match_index]["ticker"]
+elif len(ticker_matches) == 1:
+    ticker_code = ticker_matches[0]["ticker"]
+else:
+    ticker_code = resolve_ticker_input(ticker_input)
 ticker_symbol = ticker_code.strip().upper()
 ticker_name = get_ticker_name(ticker_code)
 is_known_ticker = ticker_name != UNKNOWN_TICKER_NAME
 if is_known_ticker:
-    st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_symbol})")
+    if len(ticker_matches) > 1:
+        st.sidebar.info(f"검색어: **{ticker_input.strip()}** → 선택된 종목: **{ticker_name}** ({ticker_symbol})")
+    elif ticker_input.strip() != ticker_code:
+        st.sidebar.info(f"검색어: **{ticker_input.strip()}** → 선택된 종목: **{ticker_name}** ({ticker_symbol})")
+    else:
+        st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_symbol})")
 else:
+    unknown_label = ticker_input.strip() or "미입력"
     hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
-    st.sidebar.warning(f"알 수 없는 종목 코드입니다: **{ticker_symbol or '미입력'}**")
+    st.sidebar.warning(f"알 수 없는 종목 코드 또는 종목명입니다: **{unknown_label}**")
     if hint:
         st.sidebar.info(hint)
 
@@ -788,7 +856,7 @@ if not df.empty:
 else:
     if not is_known_ticker:
         hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
-        message = "알 수 없는 종목 코드입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요."
+        message = "알 수 없는 종목 코드 또는 종목명입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요."
         if hint:
             message = f"{message} {hint}"
         st.error(message)
