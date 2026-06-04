@@ -618,7 +618,7 @@ def calculate_combined_monthly_stats(ml_df, vbt_df):
     final_df = merged[['년-월', '머신러닝 수익률 (%)', '변동성 돌파 수익률 (%)', '단순 보유 수익률 (%)', '돌파 매수 횟수 (회)', '머신러닝 오차 (원)']]
     return final_df
 
-# [LOG: 20260604_1707]
+# [LOG: 20260604_1725]
 # 10. 이동평균선 골든크로스 전략 백테스트 함수
 def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct):
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
@@ -896,8 +896,8 @@ end_date = st.sidebar.text_input("종료 날짜 (YYYYMMDD)", today_str)
 st.sidebar.subheader("💸 실전 투자 조건 (거래비용)")
 initial_budget = st.sidebar.number_input("💵 초기 투자 원금 (원)", min_value=100000, value=10000000, step=1000000, format="%d")
 
-fee_rate = st.sidebar.number_input("💸 거래 수수료율 (편도, %)", min_value=0.0, max_value=1.0, value=0.015, step=0.005, format="%.3f")
-slippage_rate = st.sidebar.number_input("📉 슬리피지율 (편도, %)", min_value=0.0, max_value=1.0, value=0.02, step=0.01, format="%.2f")
+fee_rate = st.sidebar.number_input("💸 거래 수수료율 (편도, %)", min_value=0.0, max_value=1.0, value=0.15, step=0.01, format="%.3f")
+slippage_rate = st.sidebar.number_input("📉 슬리피지율 (편도, %)", min_value=0.0, max_value=1.0, value=0.10, step=0.01, format="%.2f")
 
 # 5. 전략별 개별 설정
 st.sidebar.subheader("🎯 전략 파라미터")
