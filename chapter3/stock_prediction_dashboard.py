@@ -406,7 +406,7 @@ def load_data(start_date, end_date, ticker_code):
     return pd.DataFrame()
 
 
-# [LOG: 20260604_1748]
+# [LOG: 20260604_1751]
 # 2-2. 주요 재무 데이터 로드 함수 (yfinance 연동)
 @st.cache_data
 def load_financial_data(ticker_code):
@@ -965,11 +965,20 @@ with st.sidebar.expander("🔍 키워드 기반 종목 스캐너 (종목 발굴)
                     pe_val = info.get('trailingPE')
                     pe_str = f"{pe_val:.1f}배" if pe_val is not None else "-"
                     
+                    # PBR 및 ROE 포맷팅
+                    pbr_val = info.get('priceToBook')
+                    pbr_str = f"{pbr_val:.2f}배" if pbr_val is not None else "-"
+                    
+                    roe_val = info.get('returnOnEquity')
+                    roe_str = f"{roe_val * 100:+.1f}%" if roe_val is not None else "-"
+                    
                     found_stocks.append({
                         "티커": tkr.replace(".KS", "").replace(".KQ", ""),
                         "종목명": name,
                         "섹터": info.get("sector", "-"),
                         "PER": pe_str,
+                        "PBR": pbr_str,
+                        "ROE": roe_str,
                         "매출 성장률": rev_growth_str,
                         "배당 수익률": f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-"
                     })
