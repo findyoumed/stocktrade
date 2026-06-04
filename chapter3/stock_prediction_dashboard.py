@@ -406,7 +406,7 @@ def load_data(start_date, end_date, ticker_code):
     return pd.DataFrame()
 
 
-# [LOG: 20260604_1744]
+# [LOG: 20260604_1746]
 # 2-2. 주요 재무 데이터 로드 함수 (yfinance 연동)
 @st.cache_data
 def load_financial_data(ticker_code):
@@ -908,6 +908,21 @@ st.write("다양한 퀀트 전략 및 머신러닝 모델의 성과를 분석하
 # 세션 상태 초기화 및 관리
 if 'run_backtest' not in st.session_state:
     st.session_state['run_backtest'] = False
+if 'scanner_results' not in st.session_state:
+    st.session_state['scanner_results'] = None
+if 'scanner_keyword' not in st.session_state:
+    st.session_state['scanner_keyword'] = ""
+
+# 🔍 키워드 기반 종목 스캐너 결과 표시 영역 (오른쪽 메인 화면)
+if st.session_state['scanner_results'] is not None:
+    with st.expander(f"🔍 '{st.session_state['scanner_keyword']}' 관련 종목 발굴 결과 ({len(st.session_state['scanner_results'])}개 발견)", expanded=True):
+        st.dataframe(pd.DataFrame(st.session_state['scanner_results']), use_container_width=True, hide_index=True)
+        c1, c2 = st.columns([6, 1])
+        c1.caption("※ 발굴된 종목의 티커를 왼쪽 사이드바의 종목명 입력창에 입력하여 바로 백테스트를 실행해 보세요.")
+        if c2.button("결과 닫기", key="close_scanner_results", use_container_width=True):
+            st.session_state['scanner_results'] = None
+            st.session_state['scanner_keyword'] = ""
+            st.rerun()
 
 # 사이드바 설정
 # 🔍 키워드 기반 종목 스캐너 (사이드바 맨 위 배치)
@@ -951,8 +966,10 @@ with st.sidebar.expander("🔍 키워드 기반 종목 스캐너 (종목 발굴)
                     found_stocks.append({
                         "티커": tkr.replace(".KS", "").replace(".KQ", ""),
                         "종목명": name,
+                        "섹터": info.get("sector", "-"),
                         "PER": pe_str,
-                        "성장률": rev_growth_str
+                        "매출 성장률": rev_growth_str,
+                        "배당 수익률": f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-"
                     })
             except Exception:
                 continue
@@ -961,11 +978,15 @@ with st.sidebar.expander("🔍 키워드 기반 종목 스캐너 (종목 발굴)
         status_text.empty()
         
         if found_stocks:
-            st.sidebar.success(f"'{keyword}' 종목 {len(found_stocks)}개 발견!")
-            # 사이드바 가로폭에 맞는 콤팩트 테이블
-            st.sidebar.dataframe(pd.DataFrame(found_stocks), use_container_width=True, hide_index=True)
+            st.sidebar.success(f"'{keyword}' 검색 완료! 우측 화면을 확인하세요.")
+            st.session_state['scanner_results'] = found_stocks
+            st.session_state['scanner_keyword'] = keyword
+            st.rerun()
         else:
             st.sidebar.warning(f"'{keyword}' 관련 종목을 찾지 못했습니다.")
+            st.session_state['scanner_results'] = None
+            st.session_state['scanner_keyword'] = ""
+            st.rerun()
 
 st.sidebar.header("⚙️ 전략 및 파라미터 설정")
 
