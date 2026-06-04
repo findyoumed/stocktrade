@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# [LOG: 20260604_1307]
+# [LOG: 20260604_1309]
 
 # 1. 종목 이름 조회 함수
 @st.cache_data
@@ -53,9 +53,12 @@ def prepare_features(df):
     y = df['종가'].iloc[1:]
     return X, y
 
-# 4. 머신러닝 롤링 윈도우 예측 수행 함수
-def run_rolling_forecast(X, y, df_index, window_size):
-    """매일 이전 window_size일의 데이터를 학습하여 다음 날 종가를 예측합니다."""
+# 4. 머신러닝 롤링 윈도우 예측 수행 함수 (학습 로직 캐싱 추가)
+@st.cache_data
+def run_rolling_forecast(X, y, window_size):
+    """매일 이전 window_size일의 데이터를 학습하여 다음 날 종가를 예측합니다. 
+    동일한 피처와 윈도우 크기일 경우 연산 결과를 캐싱하여 즉시 반환합니다.
+    """
     predictions = []
     prediction_dates = []
     
@@ -338,7 +341,7 @@ if not df.empty:
             # 머신러닝 모드 연산
             if strategy_choice == "머신러닝 롤링 예측 전략":
                 X, y = prepare_features(df)
-                pred_series = run_rolling_forecast(X, y, df.index, window_size)
+                pred_series = run_rolling_forecast(X, y, window_size)
                 actual_close = df['종가'].loc[pred_series.index]
                 ml_df = run_ml_backtest(df, pred_series)
                 
@@ -360,7 +363,7 @@ if not df.empty:
             # 통합 비교 모드 연산 (두 개 모두 연산)
             else:
                 X, y = prepare_features(df)
-                pred_series = run_rolling_forecast(X, y, df.index, window_size)
+                pred_series = run_rolling_forecast(X, y, window_size)
                 actual_close = df['종가'].loc[pred_series.index]
                 ml_df = run_ml_backtest(df, pred_series)
                 
@@ -529,7 +532,7 @@ if not df.empty:
                         monthly_stats, x='년-월', y='평균 절대 오차 (원)', 
                         color='평균 절대 오차 (원)',
                         color_continuous_scale=px.colors.sequential.OrRd
-                        )
+                    )
                     fig_bar.update_traces(hovertemplate='<b>년-월</b>: %{x}<br><b>평균 절대 오차</b>: %{y:,.0f}원<extra></extra>')
                     fig_bar.update_layout(
                         plot_bgcolor="white", paper_bgcolor="white",
