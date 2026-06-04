@@ -7,11 +7,17 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# [LOG: 20260604_1356]
+# [LOG: 20260604_1357]
 
-# 1. 종목 이름 조회 함수 (캐시 충돌 방지를 위해 @st.cache_data 데코레이터 제거)
+UNKNOWN_TICKER_NAME = "알 수 없는 종목"
+
+# 1. 종목 이름 조회 함수 (pykrx와 yfinance를 모두 활용하여 미국 주식 및 국내 ETF 지원)
 def get_ticker_name(ticker_code):
-    """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자)"""
+    """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자, TLT -> iShares 20+ Year Treasury Bond ETF)"""
+    ticker_code = ticker_code.strip()
+    if not ticker_code:
+        return UNKNOWN_TICKER_NAME
+    
     etf_map = {
         "360750": "TIGER 미국S&P500",
         "379800": "KODEX 미국S&P500TR",
@@ -29,24 +35,99 @@ def get_ticker_name(ticker_code):
     if ticker_code in etf_map:
         return etf_map[ticker_code]
         
+    # 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
+    if ticker_code.isalpha():
+        try:
+            import yfinance as yf
+            ticker_info = yf.Ticker(ticker_code.upper()).info
+            name = ticker_info.get('longName') or ticker_info.get('shortName')
+            if name:
+                return name
+        except Exception:
+            pass
+        return UNKNOWN_TICKER_NAME
+            
+    # 숫자 종목코드 (한국 주식)인 경우 pykrx로 먼저 조회
     try:
         name = stock.get_market_ticker_name(ticker_code)
-        if name == "":
-            return "알 수 없는 종목"
-        return name
+        if name != "":
+            return name
     except Exception:
-        return "알 수 없는 종목"
+        pass
+        
+    # pykrx로 조회가 안 되는 경우 yfinance(.KS)로 재차 조회
+    try:
+        import yfinance as yf
+        ticker_info = yf.Ticker(f"{ticker_code}.KS").info
+        name = ticker_info.get('longName') or ticker_info.get('shortName')
+        if name:
+            return name
+    except Exception:
+        pass
+        
+    return UNKNOWN_TICKER_NAME
 
-# 2. 주식 데이터 불러오기 함수
+# 2. 주식 데이터 불러오기 함수 (pykrx 실패 시 yfinance로 백업 연동 및 미국 주식 직접 조회 기능 추가)
 @st.cache_data
 def load_data(start_date, end_date, ticker_code):
-    """선택한 종목의 주식 데이터를 불러옵니다."""
+    """선택한 종목의 주식 데이터를 불러옵니다. pykrx와 yfinance를 연계합니다."""
+    ticker_code = ticker_code.strip()
+    
+    # 1. 영어 종목코드 (미국 주식, 예: TLT, SPY, QQQ)인 경우 yfinance로 즉시 로딩
+    if ticker_code.isalpha():
+        try:
+            import yfinance as yf
+            start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+            end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+            df = yf.download(ticker_code.upper(), start=start_yf, end=end_yf)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [col[0] for col in df.columns]
+                df = df.rename(columns={
+                    'Open': '시가',
+                    'High': '고가',
+                    'Low': '저가',
+                    'Close': '종가',
+                    'Volume': '거래량'
+                })
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                return df
+        except Exception as e:
+            st.error(f"미국 주식 yfinance 데이터 로드 실패: {e}")
+            return pd.DataFrame()
+            
+    # 2. 숫자 종목코드 (한국 주식/ETF)인 경우
+    df = pd.DataFrame()
     try:
+        # 1차 시도: pykrx
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker_code)
-        return df
-    except Exception as e:
-        st.error(f"데이터 로드 실패: {e}")
-        return pd.DataFrame()
+    except Exception:
+        pass
+        
+    # 2차 시도: pykrx 데이터가 비어있을 경우 yfinance의 한국 소스(.KS)로 백업 다운로드
+    if df.empty and len(ticker_code) == 6 and ticker_code.isdigit():
+        try:
+            import yfinance as yf
+            start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+            end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+            df = yf.download(f"{ticker_code}.KS", start=start_yf, end=end_yf)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [col[0] for col in df.columns]
+                df = df.rename(columns={
+                    'Open': '시가',
+                    'High': '고가',
+                    'Low': '저가',
+                    'Close': '종가',
+                    'Volume': '거래량'
+                })
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                return df
+        except Exception as e:
+            st.error(f"한국 ETF yfinance 백업 데이터 로드 실패: {e}")
+            return pd.DataFrame()
+            
+    return df
 
 # 3. 머신러닝 피처 및 타겟 전처리 함수
 def prepare_features(df):
@@ -295,6 +376,10 @@ st.markdown("""
 st.title("📈 주식 투자 전략 시뮬레이터 및 백테스트 대시보드")
 st.write("머신러닝 롤링 예측 전략과 래리 윌리엄스 변동성 돌파 전략의 성과를 분석하는 인터랙티브 대시보드입니다.")
 
+# 세션 상태 초기화 및 관리
+if 'run_backtest' not in st.session_state:
+    st.session_state['run_backtest'] = False
+
 # 사이드바 설정
 st.sidebar.header("⚙️ 전략 및 파라미터 설정")
 
@@ -305,12 +390,18 @@ strategy_choice = st.sidebar.radio(
 )
 
 # 2. 공통 종목 코드 입력
-ticker_code = st.sidebar.text_input("종목 코드 입력 (6자리)", "360750")
+ticker_code = st.sidebar.text_input("종목 코드 입력 (예: 360750, 396580, TLT)", "360750")
+ticker_symbol = ticker_code.strip().upper()
 ticker_name = get_ticker_name(ticker_code)
-st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_code})")
+is_known_ticker = ticker_name != UNKNOWN_TICKER_NAME
+if is_known_ticker:
+    st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_symbol})")
+else:
+    st.sidebar.warning(f"알 수 없는 종목 코드입니다: **{ticker_symbol or '미입력'}**")
 
 # 🚀 백테스트 실행 버튼 위치를 상단(종목 코드 바로 아래, 시작 날짜 위)으로 이동
-if st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True):
+run_button_clicked = st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True)
+if run_button_clicked:
     st.session_state['run_backtest'] = True
 
 # 3. 공통 기간 설정 (종료 날짜 기본값을 실행 당일 오늘 날짜로 동적 자동 입력)
@@ -351,20 +442,30 @@ if 'loaded_end' not in st.session_state:
 # 입력된 종목코드나 기간이 이미 세션에 로드된 것과 일치하는지 판별
 is_data_cached = (
     not st.session_state['stock_data'].empty and
-    st.session_state['loaded_ticker'] == ticker_code and
+    st.session_state['loaded_ticker'] == ticker_code.strip() and
     st.session_state['loaded_start'] == start_date and
     st.session_state['loaded_end'] == end_date
 )
 
 # 데이터 로딩 로직 최적화: 종목이나 기간이 바뀐 최초 1회에만 데이터 로드 스피너가 작동
-if not is_data_cached:
-    with st.spinner(f"📡 {ticker_name} ({ticker_code}) 주식 데이터를 불러오는 중..."):
+if not is_known_ticker:
+    st.session_state['stock_data'] = pd.DataFrame()
+    st.session_state['loaded_ticker'] = ""
+    st.session_state['loaded_start'] = ""
+    st.session_state['loaded_end'] = ""
+    st.session_state['run_backtest'] = False
+elif not is_data_cached:
+    with st.spinner(f"📡 {ticker_name} ({ticker_symbol}) 주식 데이터를 불러오는 중..."):
         df = load_data(start_date, end_date, ticker_code)
         if not df.empty:
             st.session_state['stock_data'] = df
-            st.session_state['loaded_ticker'] = ticker_code
+            st.session_state['loaded_ticker'] = ticker_code.strip()
             st.session_state['loaded_start'] = start_date
             st.session_state['loaded_end'] = end_date
+            # 종목이나 날짜만 바뀐 경우에는 이전 실행 상태를 리셋하되,
+            # 이번 rerun에서 버튼을 누른 경우에는 즉시 백테스트가 이어지도록 유지
+            if not run_button_clicked:
+                st.session_state['run_backtest'] = False
         else:
             st.session_state['stock_data'] = pd.DataFrame()
 
@@ -456,7 +557,7 @@ if not df.empty:
                 with col3:
                     st.metric(label="📈 단순 보유 최종 잔고", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col4:
-                    st.metric(label="🎯 머신러닝 평균 오차 (MAE)", value=f"{mae:,.0f} 원")
+                    st.metric(label="⏳ 총 분석 영업일 수", value=f"{len(ml_df)} 일")
 
             # --- 구조 2: 주가 비교 차트 ---
             if strategy_choice == "머신러닝 롤링 예측 전략":
@@ -511,7 +612,7 @@ if not df.empty:
                 margin=dict(l=20, r=20, t=30, b=20),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
-                yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가 (원)"),
+                yaxis=dict(showgrid=True, gridcolor="#e9ecef", tickformat=",", title="주가"),
                 height=400
             )
             st.plotly_chart(fig_price, use_container_width=True)
@@ -667,4 +768,7 @@ if not df.empty:
     else:
         st.info("👈 왼쪽 사이드바에서 [백테스트 실행하기] 버튼을 눌러주세요!")
 else:
-    st.info("👈 왼쪽 사이드바에서 전략 및 조건을 설정한 후 [백테스트 실행하기] 버튼을 눌러주세요!")
+    if not is_known_ticker:
+        st.error("알 수 없는 종목 코드입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요.")
+    else:
+        st.info("👈 왼쪽 사이드바에서 전략 및 조건을 설정한 후 [백테스트 실행하기] 버튼을 눌러주세요!")
