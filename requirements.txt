@@ -1,0 +1,6 @@
+streamlit
+pykrx
+scikit-learn
+plotly
+pandas
+numpy
