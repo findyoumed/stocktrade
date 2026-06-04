@@ -67,14 +67,36 @@ def resolve_ticker_input(ticker_input):
     key = normalize_search_text(ticker_input)
     return KOREAN_TICKER_ALIASES.get(key, ticker_input.strip())
 
+# [LOG: 20260604_1508]
+# 실시간 KIND API를 활용한 전 상장사 종목코드/종목명 동적 로딩 및 캐싱 기능 도입
+@st.cache_data(ttl=86400)
+def get_all_listed_stocks():
+    """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록을 가져옵니다. 
+    네트워크 장애 시 빈 DataFrame을 반환하여 로컬 백업 카탈로그로 유연하게 복원됩니다.
+    """
+    import requests
+    from io import BytesIO
+    url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    try:
+        res = requests.get(url, timeout=5)
+        # BytesIO와 cp949 인코딩 명시를 통해 한글 컬럼 깨짐 및 예외 발생을 원천 차단합니다.
+        df = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
+        df['종목코드'] = df['종목코드'].astype(str).str.zfill(6)
+        df['회사명'] = df['회사명'].str.strip()
+        return df[['회사명', '종목코드']]
+    except Exception:
+        return pd.DataFrame()
+
 
 def search_local_tickers(query):
-    """부분 종목명/영문 별칭으로 로컬 카탈로그에서 후보를 찾습니다."""
+    """부분 종목명/영문 별칭으로 로컬 카탈로그 및 KIND 상장 목록에서 검색 후보를 찾습니다."""
     key = normalize_search_text(query)
     if not key:
         return []
 
     matches = []
+    
+    # 1. 정적 로컬 카탈로그 검색 (ETF 등 수동 캐싱 우선)
     for ticker, item in LOCAL_TICKER_CATALOG.items():
         searchable_values = [ticker, item["name"], *item.get("aliases", [])]
         normalized_values = [normalize_search_text(value) for value in searchable_values]
@@ -83,11 +105,22 @@ def search_local_tickers(query):
         if any(key in value for value in normalized_values):
             matches.append({"ticker": ticker, "name": item["name"]})
 
+    # 2. KIND 실전 전 종목 실시간 검색 추가
+    listed_df = get_all_listed_stocks()
+    if not listed_df.empty:
+        # 회사명을 대소문자 구분 없이 부분 매칭
+        filtered = listed_df[listed_df['회사명'].str.lower().str.replace(" ", "").str.contains(key, na=False)]
+        for _, row in filtered.iterrows():
+            ticker = row['종목코드']
+            name = row['회사명']
+            if not any(m['ticker'] == ticker for m in matches):
+                matches.append({"ticker": ticker, "name": name})
+
     return matches
 
-# 1. 종목 이름 조회 함수 (pykrx와 yfinance를 모두 활용하여 미국 주식 및 국내 ETF 지원)
+
 def get_ticker_name(ticker_code):
-    """종목 코드를 받아 종목명을 반환합니다. (예: 005930 -> 삼성전자, TLT -> iShares 20+ Year Treasury Bond ETF)"""
+    """종목 코드를 받아 종목명을 반환합니다. (KIND DB 조회 -> yfinance -> pykrx 순)"""
     ticker_code = ticker_code.strip()
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
@@ -95,7 +128,14 @@ def get_ticker_name(ticker_code):
     if ticker_code in LOCAL_TICKER_CATALOG:
         return LOCAL_TICKER_CATALOG[ticker_code]["name"]
         
-    # 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
+    # 1. KIND 전체 상장사 목록 검색 (가장 안정적)
+    listed_df = get_all_listed_stocks()
+    if not listed_df.empty:
+        match = listed_df[listed_df['종목코드'] == ticker_code]
+        if not match.empty:
+            return match.iloc[0]['회사명']
+
+    # 2. 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
     if ticker_code.isalpha():
         try:
             import yfinance as yf
@@ -108,7 +148,7 @@ def get_ticker_name(ticker_code):
             pass
         return UNKNOWN_TICKER_NAME
             
-    # 숫자 종목코드 (한국 주식)인 경우 pykrx로 먼저 조회
+    # 3. pykrx 백업 시도
     try:
         name = stock.get_market_ticker_name(ticker_code)
         if name != "":
@@ -116,26 +156,27 @@ def get_ticker_name(ticker_code):
     except Exception:
         pass
         
-    # pykrx로 조회가 안 되는 경우 yfinance(.KS)로 재차 조회
-    try:
-        import yfinance as yf
-        configure_yfinance_cache(yf)
-        ticker_info = yf.Ticker(f"{ticker_code}.KS").info
-        name = ticker_info.get('longName') or ticker_info.get('shortName')
-        if name:
-            return name
-    except Exception:
-        pass
+    # 4. yfinance 한국 소스(.KS / .KQ) 백업 조회
+    for suffix in [".KS", ".KQ"]:
+        try:
+            import yfinance as yf
+            configure_yfinance_cache(yf)
+            ticker_info = yf.Ticker(f"{ticker_code}{suffix}").info
+            name = ticker_info.get('longName') or ticker_info.get('shortName')
+            if name:
+                return name
+        except Exception:
+            pass
         
     return UNKNOWN_TICKER_NAME
 
-# 2. 주식 데이터 불러오기 함수 (pykrx 실패 시 yfinance로 백업 연동 및 미국 주식 직접 조회 기능 추가)
+
 @st.cache_data
 def load_data(start_date, end_date, ticker_code):
-    """선택한 종목의 주식 데이터를 불러옵니다. pykrx와 yfinance를 연계합니다."""
+    """선택한 종목의 주식 데이터를 불러옵니다. pykrx 연결장애 시 yfinance 한국소스로 우아하게 대체합니다."""
     ticker_code = ticker_code.strip()
     
-    # 1. 영어 종목코드 (미국 주식, 예: TLT, SPY, QQQ)인 경우 yfinance로 즉시 로딩
+    # 1. 영어 종목코드 (미국 주식)인 경우 yfinance로 즉시 로딩
     if ticker_code.isalpha():
         try:
             import yfinance as yf
@@ -159,39 +200,41 @@ def load_data(start_date, end_date, ticker_code):
             st.error(f"미국 주식 yfinance 데이터 로드 실패: {e}")
             return pd.DataFrame()
             
-    # 2. 숫자 종목코드 (한국 주식/ETF)인 경우
-    df = pd.DataFrame()
+    # 2. 한국 주식/ETF (숫자 코드) 데이터 로드
+    # pykrx의 잦은 차단/장애(EXPECTING VALUE 에러)를 방어하기 위해 yfinance(.KS/.KQ)를 최우선으로 다운로드합니다.
+    if len(ticker_code) == 6 and ticker_code.isdigit():
+        start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+        end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+        
+        for suffix in [".KS", ".KQ"]:
+            try:
+                import yfinance as yf
+                configure_yfinance_cache(yf)
+                df = yf.download(f"{ticker_code}{suffix}", start=start_yf, end=end_yf)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = [col[0] for col in df.columns]
+                    df = df.rename(columns={
+                        'Open': '시가',
+                        'High': '고가',
+                        'Low': '저가',
+                        'Close': '종가',
+                        'Volume': '거래량'
+                    })
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                    return df
+            except Exception:
+                pass
+                
+    # 3. 마지막 백업 수단: pykrx
     try:
-        # 1차 시도: pykrx
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker_code)
+        if not df.empty:
+            return df
     except Exception:
         pass
         
-    # 2차 시도: pykrx 데이터가 비어있을 경우 yfinance의 한국 소스(.KS)로 백업 다운로드
-    if df.empty and len(ticker_code) == 6 and ticker_code.isalnum():
-        try:
-            import yfinance as yf
-            configure_yfinance_cache(yf)
-            start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
-            end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
-            df = yf.download(f"{ticker_code}.KS", start=start_yf, end=end_yf)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [col[0] for col in df.columns]
-                df = df.rename(columns={
-                    'Open': '시가',
-                    'High': '고가',
-                    'Low': '저가',
-                    'Close': '종가',
-                    'Volume': '거래량'
-                })
-                df.index = pd.to_datetime(df.index).tz_localize(None)
-                return df
-        except Exception as e:
-            st.error(f"한국 ETF yfinance 백업 데이터 로드 실패: {e}")
-            return pd.DataFrame()
-            
-    return df
+    return pd.DataFrame()
 
 # 3. 머신러닝 피처 및 타겟 전처리 함수
 def prepare_features(df):
@@ -555,10 +598,22 @@ elif not is_data_cached:
         else:
             st.session_state['stock_data'] = pd.DataFrame()
 
+# [LOG: 20260604_1502]
+# 백테스트 실행 및 예외 제어문 최적화
 df = st.session_state['stock_data']
 
-# 백테스트 연산 및 시각화 출력 (데이터가 성공적으로 있는 경우에만 기동)
-if not df.empty:
+if not is_known_ticker:
+    hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
+    err_msg = f"❌ 알 수 없는 종목 코드 또는 종목명입니다: **{ticker_input.strip() or '미입력'}**"
+    if hint:
+        err_msg += f"\n\n💡 도움말: {hint}"
+    st.error(err_msg)
+elif df.empty:
+    if st.session_state.get('run_backtest', False):
+        st.error("❌ 주식 데이터를 불러오지 못했습니다. 올바른 종목 코드 및 백테스트 기간을 다시 확인해 주세요.")
+    else:
+        st.info("👈 왼쪽 사이드바에서 조건을 입력하고 [백테스트 실행하기] 버튼을 눌러주세요.")
+else:
     if st.session_state.get('run_backtest', False):
         # 1. 1차 검증
         if strategy_choice in ["머신러닝 롤링 예측 전략", "두 전략 통합 비교"] and len(df) <= window_size:
@@ -853,12 +908,3 @@ if not df.empty:
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)
     else:
         st.info("👈 왼쪽 사이드바에서 [백테스트 실행하기] 버튼을 눌러주세요!")
-else:
-    if not is_known_ticker:
-        hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
-        message = "알 수 없는 종목 코드 또는 종목명입니다. 거래소에 등록된 종목 코드나 티커를 입력해 주세요."
-        if hint:
-            message = f"{message} {hint}"
-        st.error(message)
-    else:
-        st.info("👈 왼쪽 사이드바에서 전략 및 조건을 설정한 후 [백테스트 실행하기] 버튼을 눌러주세요!")
