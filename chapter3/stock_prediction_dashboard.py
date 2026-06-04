@@ -56,6 +56,16 @@ LOCAL_TICKER_CATALOG = {
     "453850": {"name": "ACE 미국30년국채액티브(H)", "aliases": []},
     "476560": {"name": "KODEX 미국30년국채액티브(H)", "aliases": []},
     "458250": {"name": "TIGER 미국30년국채액티브(H)", "aliases": []},
+    "035420": {"name": "네이버", "aliases": ["NAVER", "naver", "nav"]},
+    "035720": {"name": "카카오", "aliases": ["Kakao", "kakao", "kaka"]},
+    "005380": {"name": "현대차", "aliases": ["Hyundai Motor", "hyundai", "hyeon"]},
+    "000270": {"name": "기아", "aliases": ["Kia", "kia"]},
+    "003550": {"name": "LG", "aliases": ["LG", "lg", "엘지"]},
+    "066570": {"name": "LG전자", "aliases": ["LG Electronics", "lg전자", "엘지전자"]},
+    "051910": {"name": "LG화학", "aliases": ["LG Chem", "lg화학", "엘지화학"]},
+    "000660": {"name": "SK하이닉스", "aliases": ["SK Hynix", "sk하이닉스", "에스케이하이닉스", "하이닉스"]},
+    "034730": {"name": "SK", "aliases": ["SK", "sk", "에스케이"]},
+    "017670": {"name": "SK텔레콤", "aliases": ["SK Telecom", "sk텔레콤", "에스케이텔레콤"]},
 }
 
 
@@ -118,7 +128,10 @@ def get_all_listed_stocks():
     # 1. KIND 일반 상장 주식 로드
     url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
     try:
-        res = requests.get(url_kind, timeout=5)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        res = requests.get(url_kind, headers=headers, timeout=5)
         df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
         df_stocks['종목코드'] = df_stocks['종목코드'].astype(str).str.zfill(6)
         df_stocks['회사명'] = df_stocks['회사명'].str.strip()
@@ -174,51 +187,85 @@ def get_all_listed_stocks():
 
 
 def search_local_tickers(query):
-    """부분 종목명/영문 별칭으로 로컬 카탈로그 및 KIND/Naver ETF 상장 목록에서 검색 후보를 찾습니다."""
+    """부분 종목명/영문 별칭으로 로컬 카탈로그 및 KIND/Naver ETF 상장 목록에서 검색 후보를 찾습니다.
+    한/영 대기업 그룹명 치환 매칭(예: lg <-> 엘지)을 기본 지원합니다.
+    """
     key = normalize_search_text(query)
     if not key:
         return []
 
-    # 한글과 영문/숫자가 붙어있는 경우(예: '배당plus')를 대비하여 토큰 단위 분리 AND 검색 지원
+    # 한글과 영문/숫자가 붙어있는 경우(예: '배당plus')를 대비하여 토큰 단위 분리
     import re
     tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
     if not tokens:
         tokens = [key.lower()]
+
+    # 대표적인 영문 그룹사 약어와 한글 공식 사명 매핑
+    group_translation = {
+        "lg": "엘지",
+        "sk": "에스케이",
+        "gs": "지에스",
+        "cj": "씨제이",
+        "hd": "현대",
+    }
+
+    # 토큰과 텍스트를 대조하여 매칭 여부를 판단하는 헬퍼 함수
+    def match_tokens(target_text):
+        if not isinstance(target_text, str):
+            return False
+        text_lower = target_text.lower().replace(" ", "")
+        
+        for token in tokens:
+            translated = group_translation.get(token, None)
+            if translated:
+                if (token not in text_lower) and (translated not in text_lower):
+                    return False
+            else:
+                reverse_match = False
+                for eng, kor in group_translation.items():
+                    if token == kor and eng in text_lower:
+                        reverse_match = True
+                        break
+                if not reverse_match and (token not in text_lower):
+                    return False
+        return True
 
     matches = []
     
     # 1. 정적 로컬 카탈로그 검색 (ETF 등 수동 캐싱 우선)
     for ticker, item in LOCAL_TICKER_CATALOG.items():
         searchable_values = [ticker, item["name"], *item.get("aliases", [])]
-        normalized_values = [normalize_search_text(value).lower() for value in searchable_values]
-        
-        # 완전 일치 항목이 있다면 즉시 최우선 반환
-        if any(key.lower() == value for value in normalized_values):
-            return [{"ticker": ticker, "name": item["name"]}]
-            
-        # 모든 토큰이 단어 내에 포함되는지 체크
-        for val in normalized_values:
-            if all(token in val for token in tokens):
+        for val in searchable_values:
+            if match_tokens(val):
                 matches.append({"ticker": ticker, "name": item["name"]})
                 break
 
     # 2. KIND + Naver ETF 통합 목록 실시간 검색 (AND 토큰 검색)
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        def match_tokens(name_str):
-            if not isinstance(name_str, str):
-                return False
-            name_lower = name_str.lower().replace(" ", "")
-            return all(token in name_lower for token in tokens)
-
         filtered = listed_df[listed_df['name'].apply(match_tokens)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
             if not any(m['ticker'] == ticker for m in matches):
                 matches.append({"ticker": ticker, "name": name})
-    # 3. 정렬 순서 최적화: 이름이 짧은 순(메인 대표 종목 우선) -> 가나다(알파벳) 오름차순
-    matches = sorted(matches, key=lambda x: (len(x['name']), x['name']))
+
+    # 3. 정렬 순서 최적화: 검색어 기반 스마트 정렬 (Score System)
+    # 0순위: 완전 일치, 1순위: 검색어로 시작함, 2순위: 검색어 포함, 3순위: 그 외
+    def score_match(query_str, name_str):
+        q = query_str.lower().replace(" ", "")
+        n = name_str.lower().replace(" ", "")
+        translated_q = group_translation.get(q, None)
+        
+        if q == n or (translated_q and translated_q == n):
+            return 0
+        elif n.startswith(q) or (translated_q and n.startswith(translated_q)):
+            return 1
+        elif q in n or (translated_q and translated_q in n):
+            return 2
+        return 3
+
+    matches = sorted(matches, key=lambda x: (score_match(key, x['name']), len(x['name']), x['name']))
 
     return matches
 
@@ -607,7 +654,7 @@ strategy_choice = st.sidebar.radio(
 )
 
 # 2. 공통 종목 코드 입력
-ticker_input = st.sidebar.text_input("종목 코드/종목명 입력 (예: 005930, 삼성전자, 453850, TLT)", "360750")
+ticker_input = st.sidebar.text_input("종목 코드/종목명 입력 (예: 005930, 삼성전자, 360750)", "")
 ticker_matches = search_local_tickers(ticker_input)
 if len(ticker_matches) > 1:
     selected_match_label = st.sidebar.selectbox(
@@ -632,11 +679,14 @@ if is_known_ticker:
     else:
         st.sidebar.info(f"선택된 종목: **{ticker_name}** ({ticker_symbol})")
 else:
-    unknown_label = ticker_input.strip() or "미입력"
-    hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
-    st.sidebar.warning(f"알 수 없는 종목 코드 또는 종목명입니다: **{unknown_label}**")
-    if hint:
-        st.sidebar.info(hint)
+    if not ticker_input.strip():
+        st.sidebar.info("💡 분석할 종목 코드 또는 종목명을 위에 입력해 주세요.")
+    else:
+        unknown_label = ticker_input.strip()
+        hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
+        st.sidebar.warning(f"알 수 없는 종목 코드 또는 종목명입니다: **{unknown_label}**")
+        if hint:
+            st.sidebar.info(hint)
 
 # 🚀 백테스트 실행 버튼 위치를 상단(종목 코드 바로 아래, 시작 날짜 위)으로 이동
 run_button_clicked = st.sidebar.button("🚀 백테스트 실행하기", use_container_width=True)
@@ -712,9 +762,11 @@ elif not is_data_cached:
 # 백테스트 실행 및 예외 제어문 최적화
 df = st.session_state['stock_data']
 
-if not is_known_ticker:
+if not ticker_input.strip():
+    st.info("👈 왼쪽 사이드바에서 [종목 코드/종목명]을 입력한 뒤 [백테스트 실행하기] 버튼을 눌러주세요.")
+elif not is_known_ticker:
     hint = INVALID_TICKER_HINTS.get(ticker_symbol, "")
-    err_msg = f"❌ 알 수 없는 종목 코드 또는 종목명입니다: **{ticker_input.strip() or '미입력'}**"
+    err_msg = f"❌ 알 수 없는 종목 코드 또는 종목명입니다: **{ticker_input.strip()}**"
     if hint:
         err_msg += f"\n\n💡 도움말: {hint}"
     st.error(err_msg)
