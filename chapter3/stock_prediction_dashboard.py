@@ -522,14 +522,15 @@ def run_rolling_forecast(X, y, window_size):
     return pred_series
 
 # 5. 머신러닝 백테스트 수익률 계산 함수 (실전 수수료/슬리피지 비용 반영)
-def run_ml_backtest(df, pred_series, initial_budget, fee_rate_pct, slippage_rate_pct):
+def run_ml_backtest(df, pred_series, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     """예측 결과를 기반으로 머신러닝 매매 백테스트 수익률을 계산합니다."""
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     
     backtest_df = pd.DataFrame({
         'Actual_Close': df['종가'].loc[pred_series.index],
         'Predicted_Close': pred_series,
-        'Prev_Close': df['종가'].shift(1).loc[pred_series.index]
+        'Prev_Close': df['종가'].shift(1).loc[pred_series.index],
+        '배당금': df['배당금'].loc[pred_series.index] if '배당금' in df.columns else 0.0
     }).dropna()
     
     backtest_df['Buy_Signal'] = backtest_df['Predicted_Close'] > backtest_df['Prev_Close']
@@ -542,15 +543,24 @@ def run_ml_backtest(df, pred_series, initial_budget, fee_rate_pct, slippage_rate
     exit_cost = np.where((backtest_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
     total_cost = entry_cost + exit_cost
     
+    # 배당 재투자 수익률 계산
+    if use_drip and '배당금' in backtest_df.columns:
+        div_yield = backtest_df['배당금'] / backtest_df['Prev_Close']
+        # 보유하고 있는 날(Buy_Signal == True)에만 배당 수익률 가산
+        strategy_div_yield = np.where(backtest_df['Buy_Signal'], div_yield, 0.0)
+    else:
+        div_yield = 0.0
+        strategy_div_yield = 0.0
+    
     # 전략 일별 수익률 계산
     backtest_df['Strategy_Return'] = np.where(
         backtest_df['Buy_Signal'],
-        (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) - total_cost,
+        (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) - total_cost + strategy_div_yield,
         1.0 - total_cost
     )
     
-    # 단순 보유 일별 수익률 (최초 1회 매수 수수료 반영)
-    hold_returns = backtest_df['Actual_Close'] / backtest_df['Prev_Close']
+    # 단순 보유 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
+    hold_returns = (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) + div_yield
     hold_returns_array = hold_returns.values
     if len(hold_returns_array) > 0:
         hold_returns_array[0] = hold_returns_array[0] - cost_rate
@@ -597,7 +607,7 @@ def calculate_ml_monthly_stats(actual, predicted, backtest_df):
     return stats_df
 
 # 7. 변동성 돌파 전략 백테스트 계산 함수 (실전 수수료/슬리피지 비용 반영)
-def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct):
+def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     """변동성 돌파 전략 백테스트를 수행합니다. 
     매일 당일 진입 후 당일 청산하므로 신호 발생 시 왕복(2회) 거래 비용이 차감됩니다.
     """
@@ -622,10 +632,15 @@ def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct):
         1.0
     )
     
-    # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영)
-    hold_returns = vbt_df['종가'] / vbt_df['종가'].shift(1)
-    hold_returns = hold_returns.fillna(1.0)
-    hold_returns_array = hold_returns.values
+    # 배당금 반영
+    if use_drip and '배당금' in vbt_df.columns:
+        div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
+    else:
+        div_yield = 0.0
+    
+    # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
+    hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
+    hold_returns_array = hold_returns.fillna(1.0).values
     if len(hold_returns_array) > 0:
         hold_returns_array[0] = hold_returns_array[0] - cost_rate
     vbt_df['Hold_Return'] = hold_returns_array
@@ -698,7 +713,7 @@ def calculate_combined_monthly_stats(ml_df, vbt_df):
 
 # [LOG: 20260604_1725]
 # 10. 이동평균선 골든크로스 전략 백테스트 함수
-def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct):
+def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     ma_df = df.copy()
     ma_df['SMA_Short'] = ma_df['종가'].rolling(window=short_period).mean()
@@ -713,14 +728,22 @@ def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rat
     exit_cost = np.where((ma_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
     total_cost = entry_cost + exit_cost
     
+    # 배당 재투자 수익률 계산
+    if use_drip and '배당금' in ma_df.columns:
+        div_yield = ma_df['배당금'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])
+        strategy_div_yield = np.where(ma_df['Buy_Signal'], div_yield, 0.0)
+    else:
+        div_yield = 0.0
+        strategy_div_yield = 0.0
+        
     ma_df['Strategy_Return'] = np.where(
         ma_df['Buy_Signal'],
-        (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) - total_cost,
+        (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) - total_cost + strategy_div_yield,
         1.0 - total_cost
     )
     ma_df['Strategy_Return'] = ma_df['Strategy_Return'].fillna(1.0)
     
-    hold_returns = ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])
+    hold_returns = (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) + div_yield
     hold_returns_array = hold_returns.fillna(1.0).values
     if len(hold_returns_array) > 0:
         hold_returns_array[0] = hold_returns_array[0] - cost_rate
@@ -748,7 +771,7 @@ def calculate_ma_cross_monthly_stats(ma_df):
     return summary
 
 # 11. RSI 과매도 반등 전략 백테스트 함수
-def run_rsi_backtest(df, period, buy_rsi, sell_rsi, initial_budget, fee_rate_pct, slippage_rate_pct):
+def run_rsi_backtest(df, period, buy_rsi, sell_rsi, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     rsi_df = df.copy()
     delta = rsi_df['종가'].diff()
@@ -778,14 +801,22 @@ def run_rsi_backtest(df, period, buy_rsi, sell_rsi, initial_budget, fee_rate_pct
     exit_cost = np.where((rsi_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
     total_cost = entry_cost + exit_cost
     
+    # 배당 재투자 수익률 계산
+    if use_drip and '배당금' in rsi_df.columns:
+        div_yield = rsi_df['배당금'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])
+        strategy_div_yield = np.where(rsi_df['Buy_Signal'], div_yield, 0.0)
+    else:
+        div_yield = 0.0
+        strategy_div_yield = 0.0
+        
     rsi_df['Strategy_Return'] = np.where(
         rsi_df['Buy_Signal'],
-        (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) - total_cost,
+        (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) - total_cost + strategy_div_yield,
         1.0 - total_cost
     )
     rsi_df['Strategy_Return'] = rsi_df['Strategy_Return'].fillna(1.0)
     
-    hold_returns = rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])
+    hold_returns = (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) + div_yield
     hold_returns_array = hold_returns.fillna(1.0).values
     if len(hold_returns_array) > 0:
         hold_returns_array[0] = hold_returns_array[0] - cost_rate
@@ -813,7 +844,7 @@ def calculate_rsi_monthly_stats(rsi_df):
     return summary
 
 # 12. 볼린저 밴드 반등 전략 백테스트 함수
-def run_bollinger_backtest(df, period, std_dev, initial_budget, fee_rate_pct, slippage_rate_pct):
+def run_bollinger_backtest(df, period, std_dev, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     bb_df = df.copy()
     bb_df['Mid'] = bb_df['종가'].rolling(window=period).mean()
@@ -849,14 +880,22 @@ def run_bollinger_backtest(df, period, std_dev, initial_budget, fee_rate_pct, sl
     exit_cost = np.where((bb_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
     total_cost = entry_cost + exit_cost
     
+    # 배당 재투자 수익률 계산
+    if use_drip and '배당금' in bb_df.columns:
+        div_yield = bb_df['배당금'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])
+        strategy_div_yield = np.where(bb_df['Buy_Signal'], div_yield, 0.0)
+    else:
+        div_yield = 0.0
+        strategy_div_yield = 0.0
+        
     bb_df['Strategy_Return'] = np.where(
         bb_df['Buy_Signal'],
-        (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) - total_cost,
+        (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) - total_cost + strategy_div_yield,
         1.0 - total_cost
     )
     bb_df['Strategy_Return'] = bb_df['Strategy_Return'].fillna(1.0)
     
-    hold_returns = bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])
+    hold_returns = (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) + div_yield
     hold_returns_array = hold_returns.fillna(1.0).values
     if len(hold_returns_array) > 0:
         hold_returns_array[0] = hold_returns_array[0] - cost_rate
@@ -1066,6 +1105,10 @@ initial_budget = st.sidebar.number_input("💵 초기 투자 원금 (원)", min_
 fee_rate = st.sidebar.number_input("💸 거래 수수료율 (편도, %)", min_value=0.0, max_value=1.0, value=0.15, step=0.01, format="%.3f")
 slippage_rate = st.sidebar.number_input("📉 슬리피지율 (편도, %)", min_value=0.0, max_value=1.0, value=0.10, step=0.01, format="%.2f")
 
+# [LOG: 20260604_0904]
+# 배당금 재투자 (DRIP) 여부 설정
+use_drip = st.sidebar.checkbox("🔄 배당금 재투자 (DRIP) 반영", value=False)
+
 # 5. 전략별 개별 설정
 st.sidebar.subheader("🎯 전략 파라미터")
 if strategy_choice == "머신러닝 롤링 예측 전략":
@@ -1180,7 +1223,7 @@ else:
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size)
                 actual_close = df['종가'].loc[pred_series.index]
-                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
+                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate, use_drip)
                 
                 # 평가 지표
                 mae = (actual_close - pred_series).abs().mean()
@@ -1193,7 +1236,7 @@ else:
                 
             # 변동성 돌파 모드 연산
             elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
-                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
+                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate, use_drip)
                 strategy_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = vbt_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = vbt_df['Strategy_Balance'].iloc[-1]
@@ -1203,7 +1246,7 @@ else:
                 
             # 이동평균선 골든크로스 연산
             elif strategy_choice == "이동평균선 골든크로스 전략":
-                ma_df = run_ma_cross_backtest(df, ma_short, ma_long, initial_budget, fee_rate, slippage_rate)
+                ma_df = run_ma_cross_backtest(df, ma_short, ma_long, initial_budget, fee_rate, slippage_rate, use_drip)
                 strategy_final_return = ma_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = ma_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = ma_df['Strategy_Balance'].iloc[-1]
@@ -1213,7 +1256,7 @@ else:
 
             # RSI 과매도 반등 연산
             elif strategy_choice == "RSI 과매도 반등 전략":
-                rsi_df = run_rsi_backtest(df, rsi_period, buy_rsi, sell_rsi, initial_budget, fee_rate, slippage_rate)
+                rsi_df = run_rsi_backtest(df, rsi_period, buy_rsi, sell_rsi, initial_budget, fee_rate, slippage_rate, use_drip)
                 strategy_final_return = rsi_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = rsi_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = rsi_df['Strategy_Balance'].iloc[-1]
@@ -1223,7 +1266,7 @@ else:
 
             # 볼린저 밴드 반등 연산
             elif strategy_choice == "볼린저 밴드 반등 전략":
-                bb_df = run_bollinger_backtest(df, bb_period, bb_std, initial_budget, fee_rate, slippage_rate)
+                bb_df = run_bollinger_backtest(df, bb_period, bb_std, initial_budget, fee_rate, slippage_rate, use_drip)
                 strategy_final_return = bb_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = bb_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = bb_df['Strategy_Balance'].iloc[-1]
@@ -1237,7 +1280,7 @@ else:
                 pred_series = run_rolling_forecast(X, y, window_size)
                 
                 # 1. 머신러닝 예측 백테스트
-                ml_df_predicted = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate)
+                ml_df_predicted = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate, use_drip)
                 
                 # 2. 전체 기간 데이터프레임으로 확장 (앞쪽 학습 기간 90일 동안은 매매 없음/잔고 유지 처리)
                 ml_df = pd.DataFrame(index=df.index)
@@ -1253,7 +1296,11 @@ else:
                 ml_df['Strategy_Return'] = ml_df['Strategy_Return'].fillna(1.0)
                 
                 # 단순 보유 수익률 계산
-                hold_returns = df['종가'] / df['종가'].shift(1)
+                if use_drip and '배당금' in df.columns:
+                    div_yield = df['배당금'] / df['종가'].shift(1).fillna(df['종가'])
+                else:
+                    div_yield = 0.0
+                hold_returns = (df['종가'] / df['종가'].shift(1).fillna(df['종가'])) + div_yield
                 hold_returns = hold_returns.fillna(1.0)
                 hold_returns_array = hold_returns.values
                 if len(hold_returns_array) > 0:
@@ -1267,7 +1314,7 @@ else:
                 ml_df['Hold_Balance'] = initial_budget * ml_df['Hold_Return'].cumprod()
                 
                 # 3. 변동성 돌파도 전체 기간으로 사용
-                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate)
+                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate, use_drip)
                 actual_close = df['종가']
                 
                 ml_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
