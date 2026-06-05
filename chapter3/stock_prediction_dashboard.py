@@ -265,10 +265,10 @@ def get_all_listed_stocks():
     is_live_stocks_loaded = not df_stocks.empty
     
     if not is_live_stocks_loaded:
-        # 일반 주식 크롤링 실패 시 로컬 백업 파일에서 주식 목록을 가져옵니다.
+        # 일반 주식 크롤링 실패 시 로컬 백업 파일에서 주식 목록을 가져옵니다. (운영체제 구분 없이 인코딩 고정)
         if backup_path.exists():
             try:
-                df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+                df_backup = pd.read_csv(backup_path, encoding='utf-8-sig', dtype={'ticker': str})
                 df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
                 
                 # 백업 데이터에서 ETF(보통 500000 이상 또는 이름에 ETF 포함)를 제외한 일반 주식 목록 추출
@@ -301,10 +301,10 @@ def get_all_listed_stocks():
     if not df_merged.empty:
         return df_merged
 
-    # 6. 최종적으로 모든 경로가 실패했을 때 백업 파일 전체를 로드하여 최후의 수단으로 반환
+    # 6. 최종적으로 모든 경로가 실패했을 때 백업 파일 전체를 로드하여 최후의 수단으로 반환 (인코딩 고정)
     if backup_path.exists():
         try:
-            df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+            df_backup = pd.read_csv(backup_path, encoding='utf-8-sig', dtype={'ticker': str})
             df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
             return df_backup
         except Exception:
