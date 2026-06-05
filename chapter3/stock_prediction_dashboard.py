@@ -202,7 +202,7 @@ def get_all_listed_stocks():
     from io import StringIO
     import re
     
-    # [LOG: 20260605_0940]
+    # [LOG: 20260605_1542] 스트림릿 클라우드 크롤링 차단 대응 및 백업 파일 보호 처리
     backup_path = Path(__file__).parent / "listed_stocks_backup.csv"
     df_stocks = pd.DataFrame()
     df_etfs = pd.DataFrame()
@@ -268,7 +268,26 @@ def get_all_listed_stocks():
     except Exception:
         pass
 
-    # 3. 주식 및 ETF 병합
+    # 3. 실시간 일반 주식 크롤링(df_stocks)이 실패하여 비어 있는 경우 백업 파일에서 안전하게 복구
+    is_live_stocks_loaded = not df_stocks.empty
+    
+    if not is_live_stocks_loaded:
+        # 일반 주식 크롤링 실패 시 로컬 백업 파일에서 주식 목록을 가져옵니다.
+        if backup_path.exists():
+            try:
+                df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+                df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
+                
+                # 백업 데이터에서 ETF(보통 500000 이상 또는 이름에 ETF 포함)를 제외한 일반 주식 목록 추출
+                if not df_etfs.empty:
+                    etf_tickers = set(df_etfs['ticker'].tolist())
+                    df_stocks = df_backup[~df_backup['ticker'].isin(etf_tickers)]
+                else:
+                    df_stocks = df_backup
+            except Exception:
+                pass
+
+    # 4. 주식 및 ETF 병합
     df_merged = pd.DataFrame()
     if not df_stocks.empty or not df_etfs.empty:
         if df_stocks.empty:
@@ -277,16 +296,19 @@ def get_all_listed_stocks():
             df_merged = df_stocks
         else:
             df_merged = pd.concat([df_stocks, df_etfs], ignore_index=True)
+            df_merged = df_merged.drop_duplicates(subset=['ticker'], keep='first')
 
-    # 4. 성공적으로 가져왔다면 로컬 백업 파일 갱신
-    if not df_merged.empty:
+    # 5. 오직 실시간 일반 주식 크롤링이 성공했을 때만 로컬 백업 파일을 최신으로 안전하게 갱신
+    if is_live_stocks_loaded and not df_merged.empty:
         try:
             df_merged.to_csv(backup_path, index=False, encoding='utf-8-sig')
         except Exception:
             pass
+
+    if not df_merged.empty:
         return df_merged
 
-    # 5. 네트워크 에러로 둘 다 실패 시 로컬 백업 파일 로드 시도
+    # 6. 최종적으로 모든 경로가 실패했을 때 백업 파일 전체를 로드하여 최후의 수단으로 반환
     if backup_path.exists():
         try:
             df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
