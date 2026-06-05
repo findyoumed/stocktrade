@@ -173,9 +173,9 @@ def resolve_ticker_input(ticker_input):
     if key.isdigit() and len(key) == 6:
         return key
 
-    # [LOG: 20260605_1557] 영문 및 일부 특수문자(. ^)로만 구성된 순수 해외 티커의 경우 한국 상장사 부분매칭을 건너뛰고 즉시 반환
+    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
     import re
-    if re.match(r'^[a-zA-Z\.\^]+$', key):
+    if re.match(r'^[a-zA-Z0-9\.\^\-/]+$', key):
         return ticker_input.strip()
 
     # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
