@@ -314,7 +314,8 @@ def get_ticker_name(ticker_code):
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
     
-    is_valid_us_ticker = ticker_code.isascii() and ticker_code.isalpha()
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    is_valid_us_ticker = ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit())
     is_valid_kr_ticker = len(ticker_code) == 6 and ticker_code.isdigit()
     if not (is_valid_us_ticker or is_valid_kr_ticker):
         return UNKNOWN_TICKER_NAME
@@ -328,7 +329,7 @@ def get_ticker_name(ticker_code):
         if not match.empty:
             return match.iloc[0]['name']
 
-    if ticker_code.isalpha():
+    if is_valid_us_ticker:
         try:
             configure_yfinance_cache(yf)
             ticker_info = yf.Ticker(ticker_code.upper()).info
@@ -438,8 +439,8 @@ def load_data(start_date, end_date, ticker_code):
     ticker_code = ticker_code.strip()
     df = pd.DataFrame()
     
-    # 1. 미국 주식 (영어 티커) yfinance 로드
-    if ticker_code.isalpha():
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
         try:
             configure_yfinance_cache(yf)
             start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"

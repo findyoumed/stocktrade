@@ -407,8 +407,8 @@ def get_ticker_name(ticker_code):
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
     
-    # 영문 티커 기호(미국 주식)는 오직 ASCII 알파벳이어야 하고, 한국 주식은 6자리 숫자여야 합니다. (한글 검색어 패스 차단)
-    is_valid_us_ticker = ticker_code.isascii() and ticker_code.isalpha()
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    is_valid_us_ticker = ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit())
     is_valid_kr_ticker = len(ticker_code) == 6 and ticker_code.isdigit()
     if not (is_valid_us_ticker or is_valid_kr_ticker):
         return UNKNOWN_TICKER_NAME
@@ -424,7 +424,7 @@ def get_ticker_name(ticker_code):
             return match.iloc[0]['name']
 
     # 2. 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
-    if ticker_code.isalpha():
+    if is_valid_us_ticker:
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
@@ -465,8 +465,8 @@ def load_data(start_date, end_date, ticker_code):
     ticker_code = ticker_code.strip()
     
     # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
-    # 1. 영어 종목코드 (미국 주식)인 경우 yfinance로 즉시 로딩
-    if ticker_code.isalpha():
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
