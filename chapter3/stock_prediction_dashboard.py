@@ -170,7 +170,7 @@ def is_ticker_like_input(value):
     if not key:
         return False
     normalized_key = normalize_search_text(key)
-    return not (normalized_key.isdigit() and len(normalized_key) == 6) and bool(re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', normalized_key))
+    return not (normalized_key.isdigit() and len(normalized_key) == 6) and bool(re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key))
 
 
 def resolve_ticker_input(ticker_input):
@@ -183,6 +183,9 @@ def resolve_ticker_input(ticker_input):
     # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
     if key.isdigit() and len(key) == 6:
         return key
+    compact_input = normalize_match_text(ticker_input)
+    if compact_input.isdigit() and len(compact_input) == 6:
+        return compact_input
 
     listed_df = pd.DataFrame()
     import re
@@ -199,7 +202,7 @@ def resolve_ticker_input(ticker_input):
                 return matched_rows.iloc[0]['ticker']
 
     # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
-    if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key):
+    if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', str(ticker_input).strip()):
         return ticker_input.strip()
 
     # 1. 수동 별칭 사전을 활용한 빠른 조회
@@ -1234,6 +1237,10 @@ if is_ticker_like_input(ticker_input):
         )
         or (
             match["ticker"].strip().lower() == ticker_input.strip().lower()
+        )
+        or (
+            normalize_match_text(match["name"]) == ticker_query_norm
+            and any(not ch.isalnum() and not ch.isspace() for ch in ticker_input)
         )
     ]
 if len(ticker_matches) > 1:
