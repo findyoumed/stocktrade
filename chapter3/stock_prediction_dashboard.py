@@ -367,7 +367,8 @@ def search_local_tickers(query):
     # 2. KIND + Naver ETF 통합 목록 실시간 검색 (AND 토큰 검색)
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        filtered = listed_df[listed_df['name'].apply(match_tokens)]
+        # [LOG: 20260605_1550] 종목코드(ticker)로도 검색이 가능하도록 매칭 범위 확장
+        filtered = listed_df[listed_df.apply(lambda r: match_tokens(r['name']) or match_tokens(r['ticker']), axis=1)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
@@ -376,20 +377,22 @@ def search_local_tickers(query):
 
     # 3. 정렬 순서 최적화: 검색어 기반 스마트 정렬 (Score System)
     # 0순위: 완전 일치, 1순위: 검색어로 시작함, 2순위: 검색어 포함, 3순위: 그 외
-    def score_match(query_str, name_str):
+    # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
+    def score_match(query_str, name_str, ticker_str):
         q = query_str.lower().replace(" ", "")
         n = name_str.lower().replace(" ", "")
+        t = ticker_str.lower().replace(" ", "")
         translated_q = group_translation.get(q, None)
         
-        if q == n or (translated_q and translated_q == n):
+        if q == n or q == t or (translated_q and translated_q == n):
             return 0
-        elif n.startswith(q) or (translated_q and n.startswith(translated_q)):
+        elif n.startswith(q) or t.startswith(q) or (translated_q and n.startswith(translated_q)):
             return 1
-        elif q in n or (translated_q and translated_q in n):
+        elif q in n or q in t or (translated_q and translated_q in n):
             return 2
         return 3
 
-    matches = sorted(matches, key=lambda x: (score_match(key, x['name']), len(x['name']), x['name']))
+    matches = sorted(matches, key=lambda x: (score_match(key, x['name'], x['ticker']), len(x['name']), x['name']))
 
     return matches
 
