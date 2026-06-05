@@ -97,9 +97,9 @@ def resolve_ticker_input(ticker_input):
     if key.isdigit() and len(key) == 6:
         return key
 
-    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
+    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
     import re
-    if re.match(r'^[a-zA-Z0-9\.\^\-/]+$', key):
+    if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key):
         return ticker_input.strip()
 
     listed_df = get_all_listed_stocks()
