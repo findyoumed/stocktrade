@@ -93,14 +93,20 @@ def resolve_ticker_input(ticker_input):
     if key in KOREAN_TICKER_ALIASES:
         return KOREAN_TICKER_ALIASES[key]
 
+    # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
+    if key.isdigit() and len(key) == 6:
+        return key
+
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
         target_name = ticker_input.strip().lower().replace(" ", "")
         
+        # 완전 일치 조회
         matched_rows = listed_df[listed_df['name'].str.lower().str.replace(" ", "") == target_name]
         if not matched_rows.empty:
             return matched_rows.iloc[0]['ticker']
             
+        # 부분 일치 조회 (가장 짧은 이름 우선 매칭)
         matched_part = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(target_name, na=False)]
         if not matched_part.empty:
             matched_part = matched_part.copy()
@@ -112,27 +118,53 @@ def resolve_ticker_input(ticker_input):
 
 @st.cache_data(ttl=86400)
 def get_all_listed_stocks():
-    """KIND 및 네이버 금융에서 전 상장 종목 및 ETF 목록을 수집 및 병합 캐싱합니다."""
+    """네이버 금융 시가총액 페이지에서 한국 거래소(KOSPI, KOSDAQ) 전체 상장사 목록(우선주 포함)을 가져오고,
+    네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
+    장애 발생 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
+    """
     import requests
-    from io import BytesIO
+    from io import StringIO
+    import re
     
+    # [LOG: 20260605_1542] 스트림릿 클라우드 크롤링 차단 대응 및 백업 파일 보호 처리
     backup_path = Path(__file__).parent / "listed_stocks_backup.csv"
     df_stocks = pd.DataFrame()
     df_etfs = pd.DataFrame()
     
-    url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    # 1. 네이버 금융 시가총액 페이지에서 코스피/코스닥 상장 주식 로드 (우선주 포함)
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        res = requests.get(url_kind, headers=headers, timeout=5)
-        df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
-        df_stocks['종목코드'] = df_stocks['종목코드'].astype(str).str.zfill(6)
-        df_stocks['회사명'] = df_stocks['회사명'].str.strip()
-        df_stocks = df_stocks[['회사명', '종목코드']].rename(columns={'회사명': 'name', '종목코드': 'ticker'})
+        stocks_list = []
+        
+        # sosok=0 (코스피), sosok=1 (코스닥)
+        for sosok in [0, 1]:
+            page = 1
+            while True:
+                url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+                res = requests.get(url, headers=headers, timeout=5)
+                res.encoding = 'euc-kr'
+                
+                # [LOG: 20260605_1546] HTML에서 종목코드와 종목명을 안전하게 한 쌍으로 추출하여 매핑 뒤틀림 방지
+                matches = re.findall(r'<a href="/item/main\.naver\?code=(\d{6})"[^>]* class="tltle">([^<]+)</a>', res.text)
+                if not matches:
+                    break
+                
+                for ticker, name in matches:
+                    stocks_list.append({
+                        'name': name.strip(),
+                        'ticker': ticker.strip().zfill(6)
+                    })
+                
+                page += 1
+                
+        if stocks_list:
+            df_stocks = pd.DataFrame(stocks_list)
     except Exception:
         pass
 
+    # 2. 네이버 금융 ETF 목록 로드 (배당plus, 고배당, S&P500 등 ETF 검색 지원)
     url_etf = 'https://finance.naver.com/api/sise/etfItemList.nhn'
     try:
         res = requests.get(url_etf, timeout=5)
@@ -149,6 +181,26 @@ def get_all_listed_stocks():
     except Exception:
         pass
 
+    # 3. 실시간 일반 주식 크롤링(df_stocks)이 실패하여 비어 있는 경우 백업 파일에서 안전하게 복구
+    is_live_stocks_loaded = not df_stocks.empty
+    
+    if not is_live_stocks_loaded:
+        # 일반 주식 크롤링 실패 시 로컬 백업 파일에서 주식 목록을 가져옵니다.
+        if backup_path.exists():
+            try:
+                df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+                df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
+                
+                # 백업 데이터에서 ETF(보통 500000 이상 또는 이름에 ETF 포함)를 제외한 일반 주식 목록 추출
+                if not df_etfs.empty:
+                    etf_tickers = set(df_etfs['ticker'].tolist())
+                    df_stocks = df_backup[~df_backup['ticker'].isin(etf_tickers)]
+                else:
+                    df_stocks = df_backup
+            except Exception:
+                pass
+
+    # 4. 주식 및 ETF 병합
     df_merged = pd.DataFrame()
     if not df_stocks.empty or not df_etfs.empty:
         if df_stocks.empty:
@@ -157,14 +209,19 @@ def get_all_listed_stocks():
             df_merged = df_stocks
         else:
             df_merged = pd.concat([df_stocks, df_etfs], ignore_index=True)
+            df_merged = df_merged.drop_duplicates(subset=['ticker'], keep='first')
 
-    if not df_merged.empty:
+    # 5. 오직 실시간 일반 주식 크롤링이 성공했을 때만 로컬 백업 파일을 최신으로 안전하게 갱신
+    if is_live_stocks_loaded and not df_merged.empty:
         try:
             df_merged.to_csv(backup_path, index=False, encoding='utf-8-sig')
         except Exception:
             pass
+
+    if not df_merged.empty:
         return df_merged
 
+    # 6. 최종적으로 모든 경로가 실패했을 때 백업 파일 전체를 로드하여 최후의 수단으로 반환
     if backup_path.exists():
         try:
             df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
@@ -225,27 +282,30 @@ def search_local_tickers(query):
 
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        filtered = listed_df[listed_df['name'].apply(match_tokens)]
+        # [LOG: 20260605_1550] 종목코드(ticker)로도 검색이 가능하도록 매칭 범위 확장
+        filtered = listed_df[listed_df.apply(lambda r: match_tokens(r['name']) or match_tokens(r['ticker']), axis=1)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
             if not any(m['ticker'] == ticker for m in matches):
                 matches.append({"ticker": ticker, "name": name})
 
-    def score_match(query_str, name_str):
+    # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
+    def score_match(query_str, name_str, ticker_str):
         q = query_str.lower().replace(" ", "")
         n = name_str.lower().replace(" ", "")
+        t = ticker_str.lower().replace(" ", "")
         translated_q = group_translation.get(q, None)
         
-        if q == n or (translated_q and translated_q == n):
+        if q == n or q == t or (translated_q and translated_q == n):
             return 0
-        elif n.startswith(q) or (translated_q and n.startswith(translated_q)):
+        elif n.startswith(q) or t.startswith(q) or (translated_q and n.startswith(translated_q)):
             return 1
-        elif q in n or (translated_q and translated_q in n):
+        elif q in n or q in t or (translated_q and translated_q in n):
             return 2
         return 3
 
-    matches = sorted(matches, key=lambda x: (score_match(key, x['name']), len(x['name']), x['name']))
+    matches = sorted(matches, key=lambda x: (score_match(key, x['name'], x['ticker']), len(x['name']), x['name']))
     return matches
 
 def get_ticker_name(ticker_code):
