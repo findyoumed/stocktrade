@@ -496,6 +496,8 @@ def load_data(start_date, end_date, ticker_code):
                     'Dividends': '배당금'
                 })
                 df.index = pd.to_datetime(df.index).tz_localize(None)
+                # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
+                df = df.ffill().bfill()
                 return df
         except Exception as e:
             st.error(f"미국 주식 yfinance 데이터 로드 실패: {e}")
@@ -524,6 +526,8 @@ def load_data(start_date, end_date, ticker_code):
                         'Dividends': '배당금'
                     })
                     df.index = pd.to_datetime(df.index).tz_localize(None)
+                    # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
+                    df = df.ffill().bfill()
                     return df
             except Exception:
                 pass
@@ -535,6 +539,8 @@ def load_data(start_date, end_date, ticker_code):
             # [LOG: 20260605_1556] pykrx 복구 시 배당금 컬럼 부재로 인한 KeyError 방지
             if "배당금" not in df.columns:
                 df["배당금"] = 0.0
+            # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
+            df = df.ffill().bfill()
             return df
     except Exception:
         pass

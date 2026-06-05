@@ -513,6 +513,9 @@ def load_data(start_date, end_date, ticker_code):
         div_series.index = pd.to_datetime(div_series.index)
         df['배당금'] = div_series
         
+        # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
+        df = df.ffill().bfill()
+        
     return df
 
 @st.cache_data
