@@ -522,6 +522,9 @@ def load_data(start_date, end_date, ticker_code):
     try:
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker_code)
         if not df.empty:
+            # [LOG: 20260605_1556] pykrx 복구 시 배당금 컬럼 부재로 인한 KeyError 방지
+            if "배당금" not in df.columns:
+                df["배당금"] = 0.0
             return df
     except Exception:
         pass
