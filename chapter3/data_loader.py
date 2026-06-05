@@ -84,35 +84,66 @@ def configure_yfinance_cache(yf_module):
 def normalize_search_text(value):
     return "".join(value.strip().lower().replace("-", " ").split())
 
+def normalize_match_text(value):
+    import re
+    return re.sub(r'[^0-9a-zA-Z가-힣]', '', str(value).strip().lower())
+
+def is_ticker_like_input(value):
+    import re
+    key = str(value).strip()
+    if not key:
+        return False
+    normalized_key = normalize_search_text(key)
+    return not (normalized_key.isdigit() and len(normalized_key) == 6) and bool(re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', normalized_key))
+
 def resolve_ticker_input(ticker_input):
     """회사명/별칭/영문 공식명을 실제 조회용 종목코드로 변환합니다."""
     if not ticker_input:
         return ""
     
     key = normalize_search_text(ticker_input)
-    if key in KOREAN_TICKER_ALIASES:
-        return KOREAN_TICKER_ALIASES[key]
 
     # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
     if key.isdigit() and len(key) == 6:
         return key
 
-    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
+    listed_df = pd.DataFrame()
     import re
+    if re.search(r'\d{6}', str(ticker_input)) and len(normalize_match_text(ticker_input)) > 6:
+        listed_df = get_all_listed_stocks()
+        if not listed_df.empty:
+            target_text = normalize_match_text(ticker_input)
+            listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+            listed_tickers = listed_df['ticker'].astype(str).apply(normalize_match_text)
+            combined_nt = listed_names + listed_tickers
+            combined_tn = listed_tickers + listed_names
+            matched_rows = listed_df[(combined_nt == target_text) | (combined_tn == target_text)]
+            if not matched_rows.empty:
+                return matched_rows.iloc[0]['ticker']
+
+    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
     if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key):
         return ticker_input.strip()
 
-    listed_df = get_all_listed_stocks()
+    if key in KOREAN_TICKER_ALIASES:
+        return KOREAN_TICKER_ALIASES[key]
+
+    if listed_df.empty:
+        listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        target_name = ticker_input.strip().lower().replace(" ", "")
+        target_name = normalize_match_text(ticker_input)
         
         # 완전 일치 조회
-        matched_rows = listed_df[listed_df['name'].str.lower().str.replace(" ", "") == target_name]
+        listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+        matched_rows = listed_df[listed_names == target_name]
         if not matched_rows.empty:
             return matched_rows.iloc[0]['ticker']
+
+        if not target_name or (target_name.isascii() and len(target_name) <= 2):
+            return ticker_input.strip()
             
         # 부분 일치 조회 (가장 짧은 이름 우선 매칭)
-        matched_part = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(target_name, na=False)]
+        matched_part = listed_df[listed_names.str.contains(target_name, na=False, regex=False)]
         if not matched_part.empty:
             matched_part = matched_part.copy()
             matched_part['name_len'] = matched_part['name'].str.len()
@@ -244,11 +275,15 @@ def search_local_tickers(query):
         return []
 
     import re
-    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
+    token_source = str(query).strip().lower().replace("-", " ")
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', token_source) if t]
     # [LOG: 20260605_1602] 특수문자 분리로 인해 발생하는 1글자 영문/숫자 토큰은 검색 오염을 방지하기 위해 정밀 필터링
     tokens = [t for t in tokens if not (len(t) == 1 and t.isalnum() and not (t >= '가' and t <= '힣'))]
     if not tokens:
-        tokens = [key.lower()]
+        compact_key = normalize_match_text(key)
+        if len(compact_key) <= 2:
+            return []
+        tokens = [compact_key]
 
     group_translation = {
         "lg": "엘지",
@@ -261,7 +296,7 @@ def search_local_tickers(query):
     def match_tokens(target_text):
         if not isinstance(target_text, str):
             return False
-        text_lower = target_text.lower().replace(" ", "")
+        text_lower = normalize_match_text(target_text)
         
         for token in tokens:
             translated = group_translation.get(token, None)
@@ -299,9 +334,9 @@ def search_local_tickers(query):
     # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
     def score_match(query_str, name_str, ticker_str):
         # [LOG: 20260605_1605] 복합 검색어(이름+코드) 입력 시 정렬 우선순위가 뒤로 밀리는 것을 보정하기 위해 결합 텍스트 스코어링 추가
-        q = query_str.lower().replace(" ", "")
-        n = name_str.lower().replace(" ", "")
-        t = ticker_str.lower().replace(" ", "")
+        q = normalize_match_text(query_str)
+        n = normalize_match_text(name_str)
+        t = normalize_match_text(ticker_str)
         combined_nt = n + t
         combined_tn = t + n
         translated_q = group_translation.get(q, None)
@@ -450,9 +485,14 @@ def load_data(start_date, end_date, ticker_code):
     
     # [LOG: 20260605_1558] 사용자가 입력한 날짜에서 대시(-), 온점(.), 슬래시(/) 등 특수기호를 제거하여 정밀 수치 규격화
     import re
-    start_date = re.sub(r'[^0-9]', '', str(start_date))
-    end_date = re.sub(r'[^0-9]', '', str(end_date))
+    start_date = re.sub(r'[^0-9]', '', str(start_date))[:8]
+    end_date = re.sub(r'[^0-9]', '', str(end_date))[:8]
     df = pd.DataFrame()
+
+    def finalize_price_data(price_df):
+        if "배당금" not in price_df.columns:
+            price_df["배당금"] = 0.0
+        return price_df.ffill().bfill()
     
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
     if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
@@ -469,7 +509,8 @@ def load_data(start_date, end_date, ticker_code):
                     'High': '고가',
                     'Low': '저가',
                     'Close': '종가',
-                    'Volume': '거래량'
+                    'Volume': '거래량',
+                    'Dividends': '배당금'
                 })
                 df.index = pd.to_datetime(df.index).tz_localize(None)
         except Exception as e:
@@ -493,7 +534,8 @@ def load_data(start_date, end_date, ticker_code):
                         'High': '고가',
                         'Low': '저가',
                         'Close': '종가',
-                        'Volume': '거래량'
+                        'Volume': '거래량',
+                        'Dividends': '배당금'
                     })
                     df.index = pd.to_datetime(df.index).tz_localize(None)
                     break
@@ -518,7 +560,7 @@ def load_data(start_date, end_date, ticker_code):
         df['배당금'] = div_series
         
         # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
-        df = df.ffill().bfill()
+        df = finalize_price_data(df)
         
     return df
 

@@ -159,37 +159,70 @@ def normalize_search_text(value):
     return "".join(value.strip().lower().replace("-", " ").split())
 
 
+def normalize_match_text(value):
+    import re
+    return re.sub(r'[^0-9a-zA-Z가-힣]', '', str(value).strip().lower())
+
+
+def is_ticker_like_input(value):
+    import re
+    key = str(value).strip()
+    if not key:
+        return False
+    normalized_key = normalize_search_text(key)
+    return not (normalized_key.isdigit() and len(normalized_key) == 6) and bool(re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', normalized_key))
+
+
 def resolve_ticker_input(ticker_input):
     """회사명/별칭/영문 공식명을 실제 조회용 종목코드로 변환합니다. 수동 별칭 매칭 후 실시간 DB 완전/부분 매칭을 수행합니다."""
     if not ticker_input:
         return ""
     
-    # 1. 수동 별칭 사전을 활용한 빠른 조회
     key = normalize_search_text(ticker_input)
-    if key in KOREAN_TICKER_ALIASES:
-        return KOREAN_TICKER_ALIASES[key]
 
     # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
     if key.isdigit() and len(key) == 6:
         return key
 
-    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
+    listed_df = pd.DataFrame()
     import re
+    if re.search(r'\d{6}', str(ticker_input)) and len(normalize_match_text(ticker_input)) > 6:
+        listed_df = get_all_listed_stocks()
+        if not listed_df.empty:
+            target_text = normalize_match_text(ticker_input)
+            listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+            listed_tickers = listed_df['ticker'].astype(str).apply(normalize_match_text)
+            combined_nt = listed_names + listed_tickers
+            combined_tn = listed_tickers + listed_names
+            matched_rows = listed_df[(combined_nt == target_text) | (combined_tn == target_text)]
+            if not matched_rows.empty:
+                return matched_rows.iloc[0]['ticker']
+
+    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
     if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key):
         return ticker_input.strip()
 
+    # 1. 수동 별칭 사전을 활용한 빠른 조회
+    if key in KOREAN_TICKER_ALIASES:
+        return KOREAN_TICKER_ALIASES[key]
+
     # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
-    listed_df = get_all_listed_stocks()
+    if listed_df.empty:
+        listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        target_name = ticker_input.strip().lower().replace(" ", "")
+        target_name = normalize_match_text(ticker_input)
         
         # 완전 일치 조회
-        matched_rows = listed_df[listed_df['name'].str.lower().str.replace(" ", "") == target_name]
+        listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+        matched_rows = listed_df[listed_names == target_name]
         if not matched_rows.empty:
             return matched_rows.iloc[0]['ticker']
+
+        if not target_name or (target_name.isascii() and len(target_name) <= 2):
+            return ticker_input.strip()
             
         # 부분 일치 조회 (가장 짧은 이름 우선 매칭)
-        matched_part = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(target_name, na=False)]
+        matched_part = listed_df[listed_names.str.contains(target_name, na=False, regex=False)]
         if not matched_part.empty:
             matched_part = matched_part.copy()
             matched_part['name_len'] = matched_part['name'].str.len()
@@ -329,11 +362,15 @@ def search_local_tickers(query):
 
     # 한글과 영문/숫자가 붙어있는 경우(예: '배당plus')를 대비하여 토큰 단위 분리
     import re
-    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
+    token_source = str(query).strip().lower().replace("-", " ")
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', token_source) if t]
     # [LOG: 20260605_1602] 특수문자 분리로 인해 발생하는 1글자 영문/숫자 토큰은 검색 오염을 방지하기 위해 정밀 필터링
     tokens = [t for t in tokens if not (len(t) == 1 and t.isalnum() and not (t >= '가' and t <= '힣'))]
     if not tokens:
-        tokens = [key.lower()]
+        compact_key = normalize_match_text(key)
+        if len(compact_key) <= 2:
+            return []
+        tokens = [compact_key]
 
     # 대표적인 영문 그룹사 약어와 한글 공식 사명 매핑
     group_translation = {
@@ -348,7 +385,7 @@ def search_local_tickers(query):
     def match_tokens(target_text):
         if not isinstance(target_text, str):
             return False
-        text_lower = target_text.lower().replace(" ", "")
+        text_lower = normalize_match_text(target_text)
         
         for token in tokens:
             translated = group_translation.get(token, None)
@@ -390,9 +427,9 @@ def search_local_tickers(query):
     # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
     def score_match(query_str, name_str, ticker_str):
         # [LOG: 20260605_1605] 복합 검색어(이름+코드) 입력 시 정렬 우선순위가 뒤로 밀리는 것을 보정하기 위해 결합 텍스트 스코어링 추가
-        q = query_str.lower().replace(" ", "")
-        n = name_str.lower().replace(" ", "")
-        t = ticker_str.lower().replace(" ", "")
+        q = normalize_match_text(query_str)
+        n = normalize_match_text(name_str)
+        t = normalize_match_text(ticker_str)
         combined_nt = n + t
         combined_tn = t + n
         translated_q = group_translation.get(q, None)
@@ -476,8 +513,13 @@ def load_data(start_date, end_date, ticker_code):
     
     # [LOG: 20260605_1558] 사용자가 입력한 날짜에서 대시(-), 온점(.), 슬래시(/) 등 특수기호를 제거하여 정밀 수치 규격화
     import re
-    start_date = re.sub(r'[^0-9]', '', str(start_date))
-    end_date = re.sub(r'[^0-9]', '', str(end_date))
+    start_date = re.sub(r'[^0-9]', '', str(start_date))[:8]
+    end_date = re.sub(r'[^0-9]', '', str(end_date))[:8]
+
+    def finalize_price_data(price_df):
+        if "배당금" not in price_df.columns:
+            price_df["배당금"] = 0.0
+        return price_df.ffill().bfill()
     
     # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
@@ -501,8 +543,7 @@ def load_data(start_date, end_date, ticker_code):
                 })
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
-                df = df.ffill().bfill()
-                return df
+                return finalize_price_data(df)
         except Exception as e:
             st.error(f"미국 주식 yfinance 데이터 로드 실패: {e}")
             return pd.DataFrame()
@@ -531,8 +572,7 @@ def load_data(start_date, end_date, ticker_code):
                     })
                     df.index = pd.to_datetime(df.index).tz_localize(None)
                     # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
-                    df = df.ffill().bfill()
-                    return df
+                    return finalize_price_data(df)
             except Exception:
                 pass
                 
@@ -541,11 +581,8 @@ def load_data(start_date, end_date, ticker_code):
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker_code)
         if not df.empty:
             # [LOG: 20260605_1556] pykrx 복구 시 배당금 컬럼 부재로 인한 KeyError 방지
-            if "배당금" not in df.columns:
-                df["배당금"] = 0.0
             # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
-            df = df.ffill().bfill()
-            return df
+            return finalize_price_data(df)
     except Exception:
         pass
         
@@ -1183,13 +1220,29 @@ with st.sidebar.expander("🔍 지수/ETF 카테고리 검색", expanded=False):
 # 🔍 공통 종목 코드 직접 입력
 ticker_input = st.sidebar.text_input("🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)", key="target_ticker")
 ticker_matches = search_local_tickers(ticker_input)
+if is_ticker_like_input(ticker_input):
+    ticker_query_norm = normalize_match_text(ticker_input)
+    ticker_matches = [
+        match for match in ticker_matches
+        if (
+            normalize_match_text(match["name"]) == ticker_query_norm
+            and any(not ch.isalnum() and not ch.isspace() for ch in match["name"])
+        )
+        or (
+            normalize_match_text(match["name"]) in ticker_query_norm
+            and normalize_match_text(match["ticker"]) in ticker_query_norm
+        )
+        or (
+            match["ticker"].strip().lower() == ticker_input.strip().lower()
+        )
+    ]
 if len(ticker_matches) > 1:
     # [LOG: 20260605_1554] Rerun 시 선택 상태가 초기화되지 않도록 명시적 세션 키 부여
     selected_match_label = st.sidebar.selectbox(
         "검색된 종목 중 선택",
         options=[f"{match['name']} ({match['ticker']})" for match in ticker_matches],
         index=0,
-        key="selected_search_match"
+        key=f"selected_search_match_{normalize_match_text(ticker_input)}"
     )
     selected_match_index = [f"{match['name']} ({match['ticker']})" for match in ticker_matches].index(selected_match_label)
     ticker_code = ticker_matches[selected_match_index]["ticker"]
