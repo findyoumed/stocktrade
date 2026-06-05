@@ -389,16 +389,19 @@ def search_local_tickers(query):
     # 0순위: 완전 일치, 1순위: 검색어로 시작함, 2순위: 검색어 포함, 3순위: 그 외
     # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
     def score_match(query_str, name_str, ticker_str):
+        # [LOG: 20260605_1605] 복합 검색어(이름+코드) 입력 시 정렬 우선순위가 뒤로 밀리는 것을 보정하기 위해 결합 텍스트 스코어링 추가
         q = query_str.lower().replace(" ", "")
         n = name_str.lower().replace(" ", "")
         t = ticker_str.lower().replace(" ", "")
+        combined_nt = n + t
+        combined_tn = t + n
         translated_q = group_translation.get(q, None)
         
-        if q == n or q == t or (translated_q and translated_q == n):
+        if q == n or q == t or q == combined_nt or q == combined_tn or (translated_q and translated_q == n):
             return 0
-        elif n.startswith(q) or t.startswith(q) or (translated_q and n.startswith(translated_q)):
+        elif n.startswith(q) or t.startswith(q) or combined_nt.startswith(q) or combined_tn.startswith(q) or (translated_q and n.startswith(translated_q)):
             return 1
-        elif q in n or q in t or (translated_q and translated_q in n):
+        elif q in n or q in t or q in combined_nt or q in combined_tn or (translated_q and translated_q in n):
             return 2
         return 3
 
