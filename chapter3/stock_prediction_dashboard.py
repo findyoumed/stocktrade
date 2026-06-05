@@ -446,6 +446,7 @@ def load_data(start_date, end_date, ticker_code):
     """선택한 종목의 주식 데이터를 불러옵니다. pykrx 연결장애 시 yfinance 한국소스로 우아하게 대체합니다."""
     ticker_code = ticker_code.strip()
     
+    # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
     # 1. 영어 종목코드 (미국 주식)인 경우 yfinance로 즉시 로딩
     if ticker_code.isalpha():
         try:
@@ -453,7 +454,7 @@ def load_data(start_date, end_date, ticker_code):
             configure_yfinance_cache(yf)
             start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
             end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
-            df = yf.download(ticker_code.upper(), start=start_yf, end=end_yf)
+            df = yf.download(ticker_code.upper(), start=start_yf, end=end_yf, actions=True)
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = [col[0] for col in df.columns]
@@ -462,7 +463,8 @@ def load_data(start_date, end_date, ticker_code):
                     'High': '고가',
                     'Low': '저가',
                     'Close': '종가',
-                    'Volume': '거래량'
+                    'Volume': '거래량',
+                    'Dividends': '배당금'
                 })
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 return df
@@ -480,7 +482,7 @@ def load_data(start_date, end_date, ticker_code):
             try:
                 import yfinance as yf
                 configure_yfinance_cache(yf)
-                df = yf.download(f"{ticker_code}{suffix}", start=start_yf, end=end_yf)
+                df = yf.download(f"{ticker_code}{suffix}", start=start_yf, end=end_yf, actions=True)
                 if not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = [col[0] for col in df.columns]
@@ -489,7 +491,8 @@ def load_data(start_date, end_date, ticker_code):
                         'High': '고가',
                         'Low': '저가',
                         'Close': '종가',
-                        'Volume': '거래량'
+                        'Volume': '거래량',
+                        'Dividends': '배당금'
                     })
                     df.index = pd.to_datetime(df.index).tz_localize(None)
                     return df
@@ -712,11 +715,19 @@ def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use
     """변동성 돌파 전략 백테스트를 수행합니다. 
     매일 당일 진입 후 당일 청산하므로 신호 발생 시 왕복(2회) 거래 비용이 차감됩니다.
     """
+    # [LOG: 20260605_0950]
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     round_trip_cost = 2 * cost_rate
     
     vbt_df = df.copy()
     
+    # OHLC 데이터 검증 (고가와 저가가 95% 이상 같은지 체크하여 종가만 채워진 부실 데이터 판별)
+    is_invalid_ohlc = (vbt_df['고가'] == vbt_df['저가']).mean() > 0.95
+    if is_invalid_ohlc:
+        st.session_state['vbt_warning'] = "⚠️ 경고: 현재 종목 데이터는 시가/고가/저가가 누락되어 종가로 채워진 '간소화/변형 버전' 데이터입니다. 래리 윌리엄스의 변동성 돌파 전략이 정상적으로 작동하지 않을 수 있습니다."
+    else:
+        st.session_state['vbt_warning'] = None
+        
     # 변동성 폭 계산 (전일 고가 - 전일 저가)
     vbt_df['Range'] = vbt_df['고가'].shift(1) - vbt_df['저가'].shift(1)
     
@@ -726,18 +737,27 @@ def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use
     # 매수 조건: 당일 고가가 매수 목표가를 초과했는지 판별
     vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
     
-    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 매수 목표가 - 왕복 비용, 미체결 시 1.0)
-    vbt_df['Strategy_Return'] = np.where(
-        vbt_df['Buy_Signal'],
-        (vbt_df['종가'] / vbt_df['Buy_Target']) - round_trip_cost,
-        1.0
+    # 실제 매수 체결 가격 계산 (당일 시가가 목표가보다 높게 시작하면 시가에 체결, 그렇지 않으면 목표가 지정가 체결)
+    vbt_df['Buy_Price'] = np.where(
+        vbt_df['시가'] > vbt_df['Buy_Target'],
+        vbt_df['시가'],
+        vbt_df['Buy_Target']
     )
     
-    # 배당금 반영
+    # [LOG: 20260605_1020] 배당금 재투자 (DRIP) 반영 조건 설정
     if use_drip and '배당금' in vbt_df.columns:
         div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
+        strategy_div_yield = np.where(vbt_df['Buy_Signal'], div_yield, 0.0)
     else:
         div_yield = 0.0
+        strategy_div_yield = 0.0
+        
+    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 실제 매수 체결가 - 왕복 비용 + 배당 수익률 반영, 미체결 시 1.0)
+    vbt_df['Strategy_Return'] = np.where(
+        vbt_df['Buy_Signal'],
+        (vbt_df['종가'] / vbt_df['Buy_Price']) - round_trip_cost + strategy_div_yield,
+        1.0
+    )
     
     # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
     hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
@@ -1408,6 +1428,10 @@ else:
                 # 예측 오차는 예측이 존재했던 구간에서만 평균 계산
                 mae = (df['종가'].loc[pred_series.index] - pred_series).abs().mean()
                 
+            # [LOG: 20260605_0950] OHLC 유효성 검증 경고 표시
+            if st.session_state.get('vbt_warning') and strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "두 전략 통합 비교"]:
+                st.warning(st.session_state['vbt_warning'])
+                
             # --- 구조 1: 성과 지표 (Metrics 4개) ---
             col1, col2, col3, col4 = st.columns(4)
             
@@ -1772,7 +1796,14 @@ else:
                 with col_table:
                     st.write("📅 **월별 거래 요약 데이터**")
                     display_stats = summary_stats.copy()
-                    display_stats['매수 보유 일수 (일)'] = display_stats['매수 보유 일수 (일)'].map('{:,.0f}일'.format)
+                    # [LOG: 20260605_0950] 변동성 돌파 전략과 그 외 전략(보유 일수 기준)의 컬럼 포맷팅 분기 처리
+                    if strategy_choice == "변동성 돌파 전략 (Larry Williams)":
+                        if '매수 횟수 (회)' in display_stats.columns:
+                            display_stats['매수 횟수 (회)'] = display_stats['매수 횟수 (회)'].map('{:,.0f}회'.format)
+                    else:
+                        if '매수 보유 일수 (일)' in display_stats.columns:
+                            display_stats['매수 보유 일수 (일)'] = display_stats['매수 보유 일수 (일)'].map('{:,.0f}일'.format)
+                    
                     display_stats['전략 수익률 (%)'] = display_stats['전략 수익률 (%)'].map('{:+.2f}%'.format)
                     display_stats['단순 보유 수익률 (%)'] = display_stats['단순 보유 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)

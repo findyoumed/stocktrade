@@ -116,24 +116,43 @@ def calculate_ml_monthly_stats(actual, predicted, backtest_df):
 
 def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     """변동성 돌파 전략 백테스트를 수행합니다."""
+    # [LOG: 20260605_0950]
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     round_trip_cost = 2 * cost_rate
     
     vbt_df = df.copy()
+    
+    # OHLC 데이터 검증 (고가와 저가가 95% 이상 같은지 체크하여 종가만 채워진 부실 데이터 판별)
+    is_invalid_ohlc = (vbt_df['고가'] == vbt_df['저가']).mean() > 0.95
+    if is_invalid_ohlc:
+        st.session_state['vbt_warning'] = "⚠️ 경고: 현재 종목 데이터는 시가/고가/저가가 누락되어 종가로 채워진 '간소화/변형 버전' 데이터입니다. 래리 윌리엄스의 변동성 돌파 전략이 정상적으로 작동하지 않을 수 있습니다."
+    else:
+        st.session_state['vbt_warning'] = None
+        
     vbt_df['Range'] = vbt_df['고가'].shift(1) - vbt_df['저가'].shift(1)
     vbt_df['Buy_Target'] = vbt_df['시가'] + (vbt_df['Range'] * K)
     vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
     
-    vbt_df['Strategy_Return'] = np.where(
-        vbt_df['Buy_Signal'],
-        (vbt_df['종가'] / vbt_df['Buy_Target']) - round_trip_cost,
-        1.0
+    # 실제 매수 체결 가격 계산 (당일 시가 > 목표가인 갭상승의 경우 시가에 체결)
+    vbt_df['Buy_Price'] = np.where(
+        vbt_df['시가'] > vbt_df['Buy_Target'],
+        vbt_df['시가'],
+        vbt_df['Buy_Target']
     )
     
+    # [LOG: 20260605_1020] 배당금 재투자 (DRIP) 반영 조건 설정
     if use_drip and '배당금' in vbt_df.columns:
         div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
+        strategy_div_yield = np.where(vbt_df['Buy_Signal'], div_yield, 0.0)
     else:
         div_yield = 0.0
+        strategy_div_yield = 0.0
+
+    vbt_df['Strategy_Return'] = np.where(
+        vbt_df['Buy_Signal'],
+        (vbt_df['종가'] / vbt_df['Buy_Price']) - round_trip_cost + strategy_div_yield,
+        1.0
+    )
     
     hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
     hold_returns_array = hold_returns.fillna(1.0).values
