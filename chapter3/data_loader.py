@@ -443,6 +443,11 @@ def get_dividends_df(ticker_code, start_date_str, end_date_str, trading_dates):
 def load_data(start_date, end_date, ticker_code):
     """선택한 종목의 OHLCV 주가 데이터 및 배당 데이터를 병합하여 로드합니다."""
     ticker_code = ticker_code.strip()
+    
+    # [LOG: 20260605_1558] 사용자가 입력한 날짜에서 대시(-), 온점(.), 슬래시(/) 등 특수기호를 제거하여 정밀 수치 규격화
+    import re
+    start_date = re.sub(r'[^0-9]', '', str(start_date))
+    end_date = re.sub(r'[^0-9]', '', str(end_date))
     df = pd.DataFrame()
     
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완

@@ -470,6 +470,11 @@ def load_data(start_date, end_date, ticker_code):
     """선택한 종목의 주식 데이터를 불러옵니다. pykrx 연결장애 시 yfinance 한국소스로 우아하게 대체합니다."""
     ticker_code = ticker_code.strip()
     
+    # [LOG: 20260605_1558] 사용자가 입력한 날짜에서 대시(-), 온점(.), 슬래시(/) 등 특수기호를 제거하여 정밀 수치 규격화
+    import re
+    start_date = re.sub(r'[^0-9]', '', str(start_date))
+    end_date = re.sub(r'[^0-9]', '', str(end_date))
+    
     # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
     if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
