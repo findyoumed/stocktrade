@@ -169,6 +169,10 @@ def resolve_ticker_input(ticker_input):
     if key in KOREAN_TICKER_ALIASES:
         return KOREAN_TICKER_ALIASES[key]
 
+    # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
+    if key.isdigit() and len(key) == 6:
+        return key
+
     # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
