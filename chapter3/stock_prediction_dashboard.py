@@ -401,6 +401,7 @@ def search_local_tickers(query):
     return matches
 
 
+@st.cache_data(ttl=86400)
 def get_ticker_name(ticker_code):
     """종목 코드를 받아 종목명을 반환합니다. (KIND/Naver ETF DB 조회 -> yfinance -> pykrx 순)"""
     ticker_code = ticker_code.strip()
@@ -1160,10 +1161,12 @@ with st.sidebar.expander("🔍 지수/ETF 카테고리 검색", expanded=False):
 ticker_input = st.sidebar.text_input("🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)", key="target_ticker")
 ticker_matches = search_local_tickers(ticker_input)
 if len(ticker_matches) > 1:
+    # [LOG: 20260605_1554] Rerun 시 선택 상태가 초기화되지 않도록 명시적 세션 키 부여
     selected_match_label = st.sidebar.selectbox(
         "검색된 종목 중 선택",
         options=[f"{match['name']} ({match['ticker']})" for match in ticker_matches],
         index=0,
+        key="selected_search_match"
     )
     selected_match_index = [f"{match['name']} ({match['ticker']})" for match in ticker_matches].index(selected_match_label)
     ticker_code = ticker_matches[selected_match_index]["ticker"]

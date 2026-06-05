@@ -308,6 +308,7 @@ def search_local_tickers(query):
     matches = sorted(matches, key=lambda x: (score_match(key, x['name'], x['ticker']), len(x['name']), x['name']))
     return matches
 
+@st.cache_data(ttl=86400)
 def get_ticker_name(ticker_code):
     """종목 코드를 통해 매칭되는 한글/영문 사명을 탐색하여 반환합니다."""
     ticker_code = ticker_code.strip()
