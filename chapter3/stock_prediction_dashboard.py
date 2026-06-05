@@ -173,6 +173,11 @@ def resolve_ticker_input(ticker_input):
     if key.isdigit() and len(key) == 6:
         return key
 
+    # [LOG: 20260605_1557] 영문 및 일부 특수문자(. ^)로만 구성된 순수 해외 티커의 경우 한국 상장사 부분매칭을 건너뛰고 즉시 반환
+    import re
+    if re.match(r'^[a-zA-Z\.\^]+$', key):
+        return ticker_input.strip()
+
     # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
