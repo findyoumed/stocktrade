@@ -245,6 +245,8 @@ def search_local_tickers(query):
 
     import re
     tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
+    # [LOG: 20260605_1602] 특수문자 분리로 인해 발생하는 1글자 영문/숫자 토큰은 검색 오염을 방지하기 위해 정밀 필터링
+    tokens = [t for t in tokens if not (len(t) == 1 and t.isalnum() and not (t >= '가' and t <= '힣'))]
     if not tokens:
         tokens = [key.lower()]
 
