@@ -455,8 +455,8 @@ def get_ticker_name(ticker_code):
         return UNKNOWN_TICKER_NAME
     
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
-    is_valid_us_ticker = ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit())
-    is_valid_kr_ticker = len(ticker_code) == 6 and ticker_code.isdigit()
+    is_valid_us_ticker = ticker_code.isascii() and not (len(ticker_code) == 6)
+    is_valid_kr_ticker = len(ticker_code) == 6
     if not (is_valid_us_ticker or is_valid_kr_ticker):
         return UNKNOWN_TICKER_NAME
     

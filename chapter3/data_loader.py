@@ -424,7 +424,7 @@ def get_dividends_df(ticker_code, start_date_str, end_date_str, trading_dates):
     # 2. 그 외 종목이거나 로컬 로드 실패 시 yfinance 온라인 데이터 조회 시도
     if div_df.empty:
         symbols_to_try = [ticker_code.upper()]
-        if len(ticker_code) == 6 and ticker_code.isdigit():
+        if len(ticker_code) == 6:
             symbols_to_try = [f"{ticker_code}.KS", f"{ticker_code}.KQ"]
             
         for sym in symbols_to_try:
@@ -495,7 +495,7 @@ def load_data(start_date, end_date, ticker_code):
         return price_df.ffill().bfill()
     
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
-    if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
+    if ticker_code.isascii() and not (len(ticker_code) == 6):
         try:
             configure_yfinance_cache(yf)
             start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
