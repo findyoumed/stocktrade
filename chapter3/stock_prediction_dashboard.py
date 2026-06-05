@@ -220,30 +220,19 @@ def get_all_listed_stocks():
             while True:
                 url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
                 res = requests.get(url, headers=headers, timeout=5)
+                res.encoding = 'euc-kr'
                 
-                # read_html 경고 방지를 위해 StringIO로 감싸기
-                html_io = StringIO(res.text)
-                dfs = pd.read_html(html_io)
-                if len(dfs) < 2:
-                    break
-                df = dfs[1]
-                df = df.dropna(subset=['종목명'])
-                df = df[df['N'] != 'N']
-                
-                if df.empty:
+                # [LOG: 20260605_1546] HTML에서 종목코드와 종목명을 안전하게 한 쌍으로 추출하여 매핑 뒤틀림 방지
+                matches = re.findall(r'<a href="/item/main\.naver\?code=(\d{6})"[^>]* class="tltle">([^<]+)</a>', res.text)
+                if not matches:
                     break
                 
-                tickers = re.findall(r'/item/main\.naver\?code=(\d{6})', res.text)
-                names = df['종목명'].tolist()
-                
-                for name, ticker in zip(names, tickers[:len(names)]):
+                for ticker, name in matches:
                     stocks_list.append({
                         'name': name.strip(),
                         'ticker': ticker.strip().zfill(6)
                     })
                 
-                if len(df) < 50:
-                    break
                 page += 1
                 
         if stocks_list:
