@@ -518,7 +518,7 @@ def load_data(start_date, end_date, ticker_code):
             return pd.DataFrame()
             
     # 2. 한국 주식/ETF (6자리 숫자) 로드
-    elif len(ticker_code) == 6 and ticker_code.isdigit():
+    elif len(ticker_code) == 6:
         start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
         end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
         
@@ -568,7 +568,7 @@ def load_data(start_date, end_date, ticker_code):
 def load_financial_data(ticker_code):
     """yfinance를 활용하여 연간 재무제표 정보를 가져옵니다."""
     tickers_to_try = [ticker_code]
-    if len(ticker_code) == 6 and ticker_code.isdigit():
+    if len(ticker_code) == 6:
         tickers_to_try = [f"{ticker_code}.KS", f"{ticker_code}.KQ"]
         
     for ticker_symbol in tickers_to_try:

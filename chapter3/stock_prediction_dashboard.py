@@ -523,7 +523,7 @@ def load_data(start_date, end_date, ticker_code):
     
     # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
     # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
-    if ticker_code.isascii() and not (len(ticker_code) == 6 and ticker_code.isdigit()):
+    if ticker_code.isascii() and not (len(ticker_code) == 6):
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
@@ -550,7 +550,7 @@ def load_data(start_date, end_date, ticker_code):
             
     # 2. 한국 주식/ETF (숫자 코드) 데이터 로드
     # pykrx의 잦은 차단/장애(EXPECTING VALUE 에러)를 방어하기 위해 yfinance(.KS/.KQ)를 최우선으로 다운로드합니다.
-    if len(ticker_code) == 6 and ticker_code.isdigit():
+    if len(ticker_code) == 6:
         start_yf = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
         end_yf = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
         
@@ -599,7 +599,7 @@ def load_financial_data(ticker_code):
     
     # 한국 주식 코드(6자리 숫자)의 경우 접미사 처리
     tickers_to_try = [ticker_code]
-    if len(ticker_code) == 6 and ticker_code.isdigit():
+    if len(ticker_code) == 6:
         tickers_to_try = [f"{ticker_code}.KS", f"{ticker_code}.KQ"]
         
     for ticker_symbol in tickers_to_try:
