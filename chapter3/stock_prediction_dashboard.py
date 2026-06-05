@@ -194,27 +194,60 @@ def resolve_ticker_input(ticker_input):
 # 실시간 KIND 및 Naver ETF API를 활용한 전 상장사 및 ETF 통합 로딩 및 캐싱 기능 도입 (로컬 CSV 백업 Fallback 지원)
 @st.cache_data(ttl=86400)
 def get_all_listed_stocks():
-    """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록 및 네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
-    네트워크 장애 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
+    """네이버 금융 시가총액 페이지에서 한국 거래소(KOSPI, KOSDAQ) 전체 상장사 목록(우선주 포함)을 가져오고,
+    네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
+    장애 발생 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
     """
     import requests
-    from io import BytesIO
+    from io import StringIO
+    import re
     
+    # [LOG: 20260605_0940]
     backup_path = Path(__file__).parent / "listed_stocks_backup.csv"
     df_stocks = pd.DataFrame()
     df_etfs = pd.DataFrame()
     
-    # 1. KIND 일반 상장 주식 로드
-    url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    # 1. 네이버 금융 시가총액 페이지에서 코스피/코스닥 상장 주식 로드 (우선주 포함)
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        res = requests.get(url_kind, headers=headers, timeout=5)
-        df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
-        df_stocks['종목코드'] = df_stocks['종목코드'].astype(str).str.zfill(6)
-        df_stocks['회사명'] = df_stocks['회사명'].str.strip()
-        df_stocks = df_stocks[['회사명', '종목코드']].rename(columns={'회사명': 'name', '종목코드': 'ticker'})
+        stocks_list = []
+        
+        # sosok=0 (코스피), sosok=1 (코스닥)
+        for sosok in [0, 1]:
+            page = 1
+            while True:
+                url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+                res = requests.get(url, headers=headers, timeout=5)
+                
+                # read_html 경고 방지를 위해 StringIO로 감싸기
+                html_io = StringIO(res.text)
+                dfs = pd.read_html(html_io)
+                if len(dfs) < 2:
+                    break
+                df = dfs[1]
+                df = df.dropna(subset=['종목명'])
+                df = df[df['N'] != 'N']
+                
+                if df.empty:
+                    break
+                
+                tickers = re.findall(r'/item/main\.naver\?code=(\d{6})', res.text)
+                names = df['종목명'].tolist()
+                
+                for name, ticker in zip(names, tickers[:len(names)]):
+                    stocks_list.append({
+                        'name': name.strip(),
+                        'ticker': ticker.strip().zfill(6)
+                    })
+                
+                if len(df) < 50:
+                    break
+                page += 1
+                
+        if stocks_list:
+            df_stocks = pd.DataFrame(stocks_list)
     except Exception:
         pass
 
@@ -263,6 +296,7 @@ def get_all_listed_stocks():
             pass
 
     return pd.DataFrame()
+
 
 
 def search_local_tickers(query):
