@@ -281,16 +281,15 @@ def search_local_tickers(query):
     matches = []
     
     for ticker, item in LOCAL_TICKER_CATALOG.items():
-        searchable_values = [ticker, item["name"], *item.get("aliases", [])]
-        for val in searchable_values:
-            if match_tokens(val):
-                matches.append({"ticker": ticker, "name": item["name"]})
-                break
+        # [LOG: 20260605_1604] 이름과 코드가 혼용된 복합 검색 지원을 위해 통합 매칭
+        combined_text = " ".join([ticker, item["name"], *item.get("aliases", [])])
+        if match_tokens(combined_text):
+            matches.append({"ticker": ticker, "name": item["name"]})
 
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        # [LOG: 20260605_1550] 종목코드(ticker)로도 검색이 가능하도록 매칭 범위 확장
-        filtered = listed_df[listed_df.apply(lambda r: match_tokens(r['name']) or match_tokens(r['ticker']), axis=1)]
+        # [LOG: 20260605_1604] 이름과 코드가 혼용된 복합 검색 지원을 위해 종목명과 티커를 하나의 문자열로 결합하여 매칭
+        filtered = listed_df[listed_df.apply(lambda r: match_tokens(f"{r['name']} {r['ticker']}"), axis=1)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
