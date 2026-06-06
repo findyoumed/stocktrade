@@ -339,28 +339,73 @@ def normalize_search_text(value):
     return "".join(value.strip().lower().replace("-", " ").split())
 
 
+def normalize_match_text(value):
+    import re
+    return re.sub(r'[^0-9a-zA-Z가-힣]', '', str(value).strip().lower())
+
+
+def is_ticker_like_input(value):
+    import re
+    key = str(value).strip()
+    if not key:
+        return False
+    normalized_key = normalize_search_text(key)
+    return not (normalized_key.isdigit() and len(normalized_key) == 6) and bool(re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', key))
+
+
 def resolve_ticker_input(ticker_input):
     """회사명/별칭/영문 공식명을 실제 조회용 종목코드로 변환합니다. 수동 별칭 매칭 후 실시간 DB 완전/부분 매칭을 수행합니다."""
     if not ticker_input:
         return ""
     
-    # 1. 수동 별칭 사전을 활용한 빠른 조회
     key = normalize_search_text(ticker_input)
+
+    # [LOG: 20260605_1552] 입력값이 6자리 숫자로 구성된 한국 종목코드인 경우 즉시 반환하여 매핑 오작동 방지
+    if key.isdigit() and len(key) == 6:
+        return key
+    compact_input = normalize_match_text(ticker_input)
+    if compact_input.isdigit() and len(compact_input) == 6:
+        return compact_input
+
+    listed_df = pd.DataFrame()
+    import re
+    if re.search(r'\d{6}', str(ticker_input)) and len(normalize_match_text(ticker_input)) > 6:
+        listed_df = get_all_listed_stocks()
+        if not listed_df.empty:
+            target_text = normalize_match_text(ticker_input)
+            listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+            listed_tickers = listed_df['ticker'].astype(str).apply(normalize_match_text)
+            combined_nt = listed_names + listed_tickers
+            combined_tn = listed_tickers + listed_names
+            matched_rows = listed_df[(combined_nt == target_text) | (combined_tn == target_text)]
+            if not matched_rows.empty:
+                return matched_rows.iloc[0]['ticker']
+
+    # [LOG: 20260605_1606] 전 세계 해외 티커(숫자, 하이픈, 슬래시, 언더바 포함)의 한국 주식 오매핑 방지를 위한 바이패스 정규식 확장
+    if re.match(r'^[a-zA-Z0-9\.\^\-/_]+$', str(ticker_input).strip()):
+        return ticker_input.strip()
+
+    # 1. 수동 별칭 사전을 활용한 빠른 조회
     if key in KOREAN_TICKER_ALIASES:
         return KOREAN_TICKER_ALIASES[key]
 
     # 2. KIND + Naver ETF 통합 목록에서 완전 일치 혹은 지능형 부분 매칭
-    listed_df = get_all_listed_stocks()
+    if listed_df.empty:
+        listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        target_name = ticker_input.strip().lower().replace(" ", "")
+        target_name = normalize_match_text(ticker_input)
         
         # 완전 일치 조회
-        matched_rows = listed_df[listed_df['name'].str.lower().str.replace(" ", "") == target_name]
+        listed_names = listed_df['name'].astype(str).apply(normalize_match_text)
+        matched_rows = listed_df[listed_names == target_name]
         if not matched_rows.empty:
             return matched_rows.iloc[0]['ticker']
+
+        if not target_name or (target_name.isascii() and len(target_name) <= 2):
+            return ticker_input.strip()
             
         # 부분 일치 조회 (가장 짧은 이름 우선 매칭)
-        matched_part = listed_df[listed_df['name'].str.lower().str.replace(" ", "").str.contains(target_name, na=False)]
+        matched_part = listed_df[listed_names.str.contains(target_name, na=False, regex=False)]
         if not matched_part.empty:
             matched_part = matched_part.copy()
             matched_part['name_len'] = matched_part['name'].str.len()
@@ -374,27 +419,49 @@ def resolve_ticker_input(ticker_input):
 # 실시간 KIND 및 Naver ETF API를 활용한 전 상장사 및 ETF 통합 로딩 및 캐싱 기능 도입 (로컬 CSV 백업 Fallback 지원)
 @st.cache_data(ttl=86400)
 def get_all_listed_stocks():
-    """KIND(기업공시채널)에서 한국 거래소 전체 상장사 목록 및 네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
-    네트워크 장애 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
+    """네이버 금융 시가총액 페이지에서 한국 거래소(KOSPI, KOSDAQ) 전체 상장사 목록(우선주 포함)을 가져오고,
+    네이버 금융에서 전체 ETF 목록을 가져와 병합합니다.
+    장애 발생 시 로컬 백업 파일(listed_stocks_backup.csv)에서 불러와 안정적인 검색을 상시 지원합니다.
     """
     import requests
-    from io import BytesIO
+    from io import StringIO
+    import re
     
+    # [LOG: 20260605_1542] 스트림릿 클라우드 크롤링 차단 대응 및 백업 파일 보호 처리
     backup_path = Path(__file__).parent / "listed_stocks_backup.csv"
     df_stocks = pd.DataFrame()
     df_etfs = pd.DataFrame()
     
-    # 1. KIND 일반 상장 주식 로드
-    url_kind = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download'
+    # 1. 네이버 금융 시가총액 페이지에서 코스피/코스닥 상장 주식 로드 (우선주 포함)
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        res = requests.get(url_kind, headers=headers, timeout=5)
-        df_stocks = pd.read_html(BytesIO(res.content), encoding='cp949', flavor='lxml')[0]
-        df_stocks['종목코드'] = df_stocks['종목코드'].astype(str).str.zfill(6)
-        df_stocks['회사명'] = df_stocks['회사명'].str.strip()
-        df_stocks = df_stocks[['회사명', '종목코드']].rename(columns={'회사명': 'name', '종목코드': 'ticker'})
+        stocks_list = []
+        
+        # sosok=0 (코스피), sosok=1 (코스닥)
+        for sosok in [0, 1]:
+            page = 1
+            while True:
+                url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+                res = requests.get(url, headers=headers, timeout=5)
+                res.encoding = 'euc-kr'
+                
+                # [LOG: 20260605_1546] HTML에서 종목코드와 종목명을 안전하게 한 쌍으로 추출하여 매핑 뒤틀림 방지
+                matches = re.findall(r'<a href="/item/main\.naver\?code=(\d{6})"[^>]* class="tltle">([^<]+)</a>', res.text)
+                if not matches:
+                    break
+                
+                for ticker, name in matches:
+                    stocks_list.append({
+                        'name': name.strip(),
+                        'ticker': ticker.strip().zfill(6)
+                    })
+                
+                page += 1
+                
+        if stocks_list:
+            df_stocks = pd.DataFrame(stocks_list)
     except Exception:
         pass
 
@@ -415,7 +482,26 @@ def get_all_listed_stocks():
     except Exception:
         pass
 
-    # 3. 주식 및 ETF 병합
+    # 3. 실시간 일반 주식 크롤링(df_stocks)이 실패하여 비어 있는 경우 백업 파일에서 안전하게 복구
+    is_live_stocks_loaded = not df_stocks.empty
+    
+    if not is_live_stocks_loaded:
+        # 일반 주식 크롤링 실패 시 로컬 백업 파일에서 주식 목록을 가져옵니다. (운영체제 구분 없이 인코딩 고정)
+        if backup_path.exists():
+            try:
+                df_backup = pd.read_csv(backup_path, encoding='utf-8-sig', dtype={'ticker': str})
+                df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
+                
+                # 백업 데이터에서 ETF(보통 500000 이상 또는 이름에 ETF 포함)를 제외한 일반 주식 목록 추출
+                if not df_etfs.empty:
+                    etf_tickers = set(df_etfs['ticker'].tolist())
+                    df_stocks = df_backup[~df_backup['ticker'].isin(etf_tickers)]
+                else:
+                    df_stocks = df_backup
+            except Exception:
+                pass
+
+    # 4. 주식 및 ETF 병합
     df_merged = pd.DataFrame()
     if not df_stocks.empty or not df_etfs.empty:
         if df_stocks.empty:
@@ -424,25 +510,29 @@ def get_all_listed_stocks():
             df_merged = df_stocks
         else:
             df_merged = pd.concat([df_stocks, df_etfs], ignore_index=True)
+            df_merged = df_merged.drop_duplicates(subset=['ticker'], keep='first')
 
-    # 4. 성공적으로 가져왔다면 로컬 백업 파일 갱신
-    if not df_merged.empty:
+    # 5. 오직 실시간 일반 주식 크롤링이 성공했을 때만 로컬 백업 파일을 최신으로 안전하게 갱신
+    if is_live_stocks_loaded and not df_merged.empty:
         try:
             df_merged.to_csv(backup_path, index=False, encoding='utf-8-sig')
         except Exception:
             pass
+
+    if not df_merged.empty:
         return df_merged
 
-    # 5. 네트워크 에러로 둘 다 실패 시 로컬 백업 파일 로드 시도
+    # 6. 최종적으로 모든 경로가 실패했을 때 백업 파일 전체를 로드하여 최후의 수단으로 반환 (인코딩 고정)
     if backup_path.exists():
         try:
-            df_backup = pd.read_csv(backup_path, dtype={'ticker': str})
+            df_backup = pd.read_csv(backup_path, encoding='utf-8-sig', dtype={'ticker': str})
             df_backup['ticker'] = df_backup['ticker'].astype(str).str.zfill(6)
             return df_backup
         except Exception:
             pass
 
     return pd.DataFrame()
+
 
 
 def search_local_tickers(query):
@@ -455,9 +545,20 @@ def search_local_tickers(query):
 
     # 한글과 영문/숫자가 붙어있는 경우(예: '배당plus')를 대비하여 토큰 단위 분리
     import re
-    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', key) if t]
+    token_source = str(query).strip().lower().replace("-", " ")
+    tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+|[가-힣]+', token_source) if t]
+    
+    # 원본 검색어 자체가 영문 2글자 이하인 경우(예: lg, sk)에는 토큰 분리 후 소실되지 않도록 1글자 필터링 우회
+    original_compact = normalize_match_text(query)
+    if len(original_compact) > 2:
+        # [LOG: 20260605_1602] 특수문자 분리로 인해 발생하는 1글자 영문/숫자 토큰은 검색 오염을 방지하기 위해 정밀 필터링
+        tokens = [t for t in tokens if not (len(t) == 1 and t.isalnum() and not (t >= '가' and t <= '힣'))]
+        
     if not tokens:
-        tokens = [key.lower()]
+        compact_key = normalize_match_text(key)
+        if len(compact_key) < 2:
+            return []
+        tokens = [compact_key]
 
     # 대표적인 영문 그룹사 약어와 한글 공식 사명 매핑
     group_translation = {
@@ -472,7 +573,7 @@ def search_local_tickers(query):
     def match_tokens(target_text):
         if not isinstance(target_text, str):
             return False
-        text_lower = target_text.lower().replace(" ", "")
+        text_lower = normalize_match_text(target_text)
         
         for token in tokens:
             translated = group_translation.get(token, None)
@@ -493,16 +594,16 @@ def search_local_tickers(query):
     
     # 1. 정적 로컬 카탈로그 검색 (ETF 등 수동 캐싱 우선)
     for ticker, item in LOCAL_TICKER_CATALOG.items():
-        searchable_values = [ticker, item["name"], *item.get("aliases", [])]
-        for val in searchable_values:
-            if match_tokens(val):
-                matches.append({"ticker": ticker, "name": item["name"]})
-                break
+        # [LOG: 20260605_1604] 이름과 코드가 혼용된 복합 검색 지원을 위해 통합 매칭
+        combined_text = " ".join([ticker, item["name"], *item.get("aliases", [])])
+        if match_tokens(combined_text):
+            matches.append({"ticker": ticker, "name": item["name"]})
 
     # 2. KIND + Naver ETF 통합 목록 실시간 검색 (AND 토큰 검색)
     listed_df = get_all_listed_stocks()
     if not listed_df.empty:
-        filtered = listed_df[listed_df['name'].apply(match_tokens)]
+        # [LOG: 20260605_1604] 이름과 코드가 혼용된 복합 검색 지원을 위해 종목명과 티커를 하나의 문자열로 결합하여 매칭
+        filtered = listed_df[listed_df.apply(lambda r: match_tokens(f"{r['name']} {r['ticker']}"), axis=1)]
         for _, row in filtered.iterrows():
             ticker = row['ticker']
             name = row['name']
@@ -511,33 +612,39 @@ def search_local_tickers(query):
 
     # 3. 정렬 순서 최적화: 검색어 기반 스마트 정렬 (Score System)
     # 0순위: 완전 일치, 1순위: 검색어로 시작함, 2순위: 검색어 포함, 3순위: 그 외
-    def score_match(query_str, name_str):
-        q = query_str.lower().replace(" ", "")
-        n = name_str.lower().replace(" ", "")
+    # [LOG: 20260605_1550] 정렬 점수 산정 시 종목코드(ticker) 매칭 가중치 추가 반영
+    def score_match(query_str, name_str, ticker_str):
+        # [LOG: 20260605_1605] 복합 검색어(이름+코드) 입력 시 정렬 우선순위가 뒤로 밀리는 것을 보정하기 위해 결합 텍스트 스코어링 추가
+        q = normalize_match_text(query_str)
+        n = normalize_match_text(name_str)
+        t = normalize_match_text(ticker_str)
+        combined_nt = n + t
+        combined_tn = t + n
         translated_q = group_translation.get(q, None)
         
-        if q == n or (translated_q and translated_q == n):
+        if q == n or q == t or q == combined_nt or q == combined_tn or (translated_q and translated_q == n):
             return 0
-        elif n.startswith(q) or (translated_q and n.startswith(translated_q)):
+        elif n.startswith(q) or t.startswith(q) or combined_nt.startswith(q) or combined_tn.startswith(q) or (translated_q and n.startswith(translated_q)):
             return 1
-        elif q in n or (translated_q and translated_q in n):
+        elif q in n or q in t or q in combined_nt or q in combined_tn or (translated_q and translated_q in n):
             return 2
         return 3
 
-    matches = sorted(matches, key=lambda x: (score_match(key, x['name']), len(x['name']), x['name']))
+    matches = sorted(matches, key=lambda x: (score_match(key, x['name'], x['ticker']), len(x['name']), x['name']))
 
     return matches
 
 
+@st.cache_data(ttl=86400)
 def get_ticker_name(ticker_code):
     """종목 코드를 받아 종목명을 반환합니다. (KIND/Naver ETF DB 조회 -> yfinance -> pykrx 순)"""
     ticker_code = ticker_code.strip()
     if not ticker_code:
         return UNKNOWN_TICKER_NAME
     
-    # 영문 티커 기호(미국 주식)는 오직 ASCII 알파벳이어야 하고, 한국 주식은 6자리 숫자여야 합니다. (한글 검색어 패스 차단)
-    is_valid_us_ticker = ticker_code.isascii() and ticker_code.isalpha()
-    is_valid_kr_ticker = len(ticker_code) == 6 and ticker_code.isdigit()
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    is_valid_us_ticker = ticker_code.isascii() and not (len(ticker_code) == 6)
+    is_valid_kr_ticker = len(ticker_code) == 6
     if not (is_valid_us_ticker or is_valid_kr_ticker):
         return UNKNOWN_TICKER_NAME
     
@@ -552,7 +659,7 @@ def get_ticker_name(ticker_code):
             return match.iloc[0]['name']
 
     # 2. 영어 종목코드 (미국 주식)인 경우 yfinance로 조회
-    if ticker_code.isalpha():
+    if is_valid_us_ticker:
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
@@ -592,8 +699,19 @@ def load_data(start_date, end_date, ticker_code):
     """선택한 종목의 주식 데이터를 불러옵니다. pykrx 연결장애 시 yfinance 한국소스로 우아하게 대체합니다."""
     ticker_code = ticker_code.strip()
     
-    # 1. 영어 종목코드 (미국 주식)인 경우 yfinance로 즉시 로딩
-    if ticker_code.isalpha():
+    # [LOG: 20260605_1558] 사용자가 입력한 날짜에서 대시(-), 온점(.), 슬래시(/) 등 특수기호를 제거하여 정밀 수치 규격화
+    import re
+    start_date = re.sub(r'[^0-9]', '', str(start_date))[:8]
+    end_date = re.sub(r'[^0-9]', '', str(end_date))[:8]
+
+    def finalize_price_data(price_df):
+        if "배당금" not in price_df.columns:
+            price_df["배당금"] = 0.0
+        return price_df.ffill().bfill()
+    
+    # [LOG: 20260605_1020] yfinance download 시 배당금 데이터(actions=True) 반영
+    # [LOG: 20260605_1553] 미국 주식 티커(특수문자 포함) 지원을 위해 판별 로직 보완
+    if ticker_code.isascii() and not (len(ticker_code) == 6):
         try:
             import yfinance as yf
             configure_yfinance_cache(yf)
@@ -601,7 +719,7 @@ def load_data(start_date, end_date, ticker_code):
             end_yf = format_yfinance_date(end_date)
             df = download_yfinance_ohlcv(yf, ticker_code.upper(), start_yf, end_yf)
             if not df.empty:
-                return df
+                return finalize_price_data(df)
         except Exception as e:
             st.error(f"미국 주식 yfinance 데이터 로드 실패: {e}")
             return pd.DataFrame()
@@ -618,7 +736,7 @@ def load_data(start_date, end_date, ticker_code):
                 configure_yfinance_cache(yf)
                 df = download_yfinance_ohlcv(yf, f"{ticker_code}{suffix}", start_yf, end_yf)
                 if not df.empty:
-                    return df
+                    return finalize_price_data(df)
             except Exception:
                 pass
                 
@@ -626,7 +744,9 @@ def load_data(start_date, end_date, ticker_code):
     try:
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker_code)
         if not df.empty:
-            return df
+            # [LOG: 20260605_1556] pykrx 복구 시 배당금 컬럼 부재로 인한 KeyError 방지
+            # [LOG: 20260605_1601] 데이터 유실 및 휴장일로 인한 결측치(NaN) 자동 전후방 보간 처리
+            return finalize_price_data(df)
     except Exception:
         pass
         
@@ -643,7 +763,7 @@ def load_financial_data(ticker_code):
     
     # 한국 주식 코드(6자리 숫자)의 경우 접미사 처리
     tickers_to_try = [ticker_code]
-    if len(ticker_code) == 6 and ticker_code.isdigit():
+    if len(ticker_code) == 6:
         tickers_to_try = [f"{ticker_code}.KS", f"{ticker_code}.KQ"]
         
     for ticker_symbol in tickers_to_try:
@@ -1129,11 +1249,19 @@ def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use
     """변동성 돌파 전략 백테스트를 수행합니다. 
     매일 당일 진입 후 당일 청산하므로 신호 발생 시 왕복(2회) 거래 비용이 차감됩니다.
     """
+    # [LOG: 20260605_0950]
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
     round_trip_cost = 2 * cost_rate
     
     vbt_df = df.copy()
     
+    # OHLC 데이터 검증 (고가와 저가가 95% 이상 같은지 체크하여 종가만 채워진 부실 데이터 판별)
+    is_invalid_ohlc = (vbt_df['고가'] == vbt_df['저가']).mean() > 0.95
+    if is_invalid_ohlc:
+        st.session_state['vbt_warning'] = "⚠️ 경고: 현재 종목 데이터는 시가/고가/저가가 누락되어 종가로 채워진 '간소화/변형 버전' 데이터입니다. 래리 윌리엄스의 변동성 돌파 전략이 정상적으로 작동하지 않을 수 있습니다."
+    else:
+        st.session_state['vbt_warning'] = None
+        
     # 변동성 폭 계산 (전일 고가 - 전일 저가)
     vbt_df['Range'] = vbt_df['고가'].shift(1) - vbt_df['저가'].shift(1)
     
@@ -1143,18 +1271,27 @@ def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use
     # 매수 조건: 당일 고가가 매수 목표가를 초과했는지 판별
     vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
     
-    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 매수 목표가 - 왕복 비용, 미체결 시 1.0)
-    vbt_df['Strategy_Return'] = np.where(
-        vbt_df['Buy_Signal'],
-        (vbt_df['종가'] / vbt_df['Buy_Target']) - round_trip_cost,
-        1.0
+    # 실제 매수 체결 가격 계산 (당일 시가가 목표가보다 높게 시작하면 시가에 체결, 그렇지 않으면 목표가 지정가 체결)
+    vbt_df['Buy_Price'] = np.where(
+        vbt_df['시가'] > vbt_df['Buy_Target'],
+        vbt_df['시가'],
+        vbt_df['Buy_Target']
     )
     
-    # 배당금 반영
+    # [LOG: 20260605_1020] 배당금 재투자 (DRIP) 반영 조건 설정
     if use_drip and '배당금' in vbt_df.columns:
         div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
+        strategy_div_yield = np.where(vbt_df['Buy_Signal'], div_yield, 0.0)
     else:
         div_yield = 0.0
+        strategy_div_yield = 0.0
+        
+    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 실제 매수 체결가 - 왕복 비용 + 배당 수익률 반영, 미체결 시 1.0)
+    vbt_df['Strategy_Return'] = np.where(
+        vbt_df['Buy_Signal'],
+        (vbt_df['종가'] / vbt_df['Buy_Price']) - round_trip_cost + strategy_div_yield,
+        1.0
+    )
     
     # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
     hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
@@ -1478,18 +1615,25 @@ def finalize_signal_backtest(signal_df, initial_budget, fee_rate_pct, slippage_r
     return out
 
 
-def calculate_signal_monthly_stats(strategy_df):
+def calculate_signal_monthly_stats(strategy_df, is_portfolio=False):
     stats_df = strategy_df.copy()
     stats_df['YearMonth'] = stats_df.index.strftime('%Y-%m')
     stats_df['Buy_Count'] = np.where(stats_df['Buy_Signal'], 1, 0)
+    stats_df['Working_Days'] = 1
     summary = stats_df.groupby('YearMonth').agg({
         'Buy_Count': 'sum',
+        'Working_Days': 'sum',
         'Strategy_Return': 'prod',
         'Hold_Return': 'prod',
     }).reset_index()
     summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
     summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
-    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    if is_portfolio:
+        summary.columns = ['년-월', '리밸런싱 횟수 (회)', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+        summary = summary[['년-월', '매수 보유 일수 (일)', '리밸런싱 횟수 (회)', '전략 수익률 (%)', '단순 보유 수익률 (%)']]
+    else:
+        summary = summary.drop(columns=['Working_Days'])
+        summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
     return summary
 
 
@@ -1702,11 +1846,38 @@ with st.sidebar.expander("🔍 지수/ETF 카테고리 검색", expanded=False):
 # 🔍 공통 종목 코드 직접 입력
 ticker_input = st.sidebar.text_input("🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)", key="target_ticker")
 ticker_matches = search_local_tickers(ticker_input)
+
+# lg, sk 등 대기업 그룹사 2글자 영어 명칭이 미국 주식 티커(예: SPY)로 오인되어 
+# 국내 계열사 매칭 결과가 강제로 삭제되지 않도록 우회 조건을 마련합니다.
+is_group_name_search = normalize_match_text(ticker_input) in ["lg", "sk", "gs", "cj", "hd"]
+
+if is_ticker_like_input(ticker_input) and not is_group_name_search:
+    ticker_query_norm = normalize_match_text(ticker_input)
+    ticker_matches = [
+        match for match in ticker_matches
+        if (
+            normalize_match_text(match["name"]) == ticker_query_norm
+            and any(not ch.isalnum() and not ch.isspace() for ch in match["name"])
+        )
+        or (
+            normalize_match_text(match["name"]) in ticker_query_norm
+            and normalize_match_text(match["ticker"]) in ticker_query_norm
+        )
+        or (
+            match["ticker"].strip().lower() == ticker_input.strip().lower()
+        )
+        or (
+            normalize_match_text(match["name"]) == ticker_query_norm
+            and any(not ch.isalnum() and not ch.isspace() for ch in ticker_input)
+        )
+    ]
 if len(ticker_matches) > 1:
+    # [LOG: 20260605_1554] Rerun 시 선택 상태가 초기화되지 않도록 명시적 세션 키 부여
     selected_match_label = st.sidebar.selectbox(
         "검색된 종목 중 선택",
         options=[f"{match['name']} ({match['ticker']})" for match in ticker_matches],
         index=0,
+        key=f"selected_search_match_{normalize_match_text(ticker_input)}"
     )
     selected_match_index = [f"{match['name']} ({match['ticker']})" for match in ticker_matches].index(selected_match_label)
     ticker_code = ticker_matches[selected_match_index]["ticker"]
@@ -2285,6 +2456,10 @@ else:
                  
             run_status_message.success(f"✅ 백테스트 완료: {ticker_name} ({ticker_symbol}) / {strategy_choice}")
 
+            # [LOG: 20260605_0950] OHLC 유효성 검증 경고 표시
+            if st.session_state.get('vbt_warning') and strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "두 전략 통합 비교"]:
+                st.warning(st.session_state['vbt_warning'])
+
             # --- 구조 1: 성과 지표 (Metrics 4개) ---
             st.subheader("✅ 백테스트 결과 요약")
             st.caption(f"{ticker_name} ({ticker_symbol}) | {start_date} ~ {end_date} | {strategy_choice}")
@@ -2775,7 +2950,8 @@ else:
                     summary_stats = calculate_macd_monthly_stats(macd_df)
                     target_df = macd_df
                 else:
-                    summary_stats = calculate_signal_monthly_stats(generic_df)
+                    is_portfolio = strategy_choice in ["영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]
+                    summary_stats = calculate_signal_monthly_stats(generic_df, is_portfolio=is_portfolio)
                     target_df = generic_df
                     
                 with col_chart:
