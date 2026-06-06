@@ -117,23 +117,22 @@ def calculate_ml_monthly_stats(actual, predicted, backtest_df):
 def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
     """변동성 돌파 전략 백테스트를 수행합니다."""
     cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    round_trip_cost = 2 * cost_rate
     
     vbt_df = df.copy()
     vbt_df['Range'] = vbt_df['고가'].shift(1) - vbt_df['저가'].shift(1)
     vbt_df['Buy_Target'] = vbt_df['시가'] + (vbt_df['Range'] * K)
-    vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
-    
-    vbt_df['Strategy_Return'] = np.where(
-        vbt_df['Buy_Signal'],
-        (vbt_df['종가'] / vbt_df['Buy_Target']) - round_trip_cost,
-        1.0
-    )
+    vbt_df['Buy_Signal'] = vbt_df['고가'] >= vbt_df['Buy_Target']
     
     if use_drip and '배당금' in vbt_df.columns:
         div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
     else:
         div_yield = 0.0
+        
+    vbt_df['Strategy_Return'] = np.where(
+        vbt_df['Buy_Signal'],
+        (vbt_df['종가'] * (1 - cost_rate)) / (vbt_df['Buy_Target'] * (1 + cost_rate)),
+        1.0
+    )
     
     hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
     hold_returns_array = hold_returns.fillna(1.0).values
@@ -403,6 +402,186 @@ def calculate_bb_monthly_stats(bb_df):
     bb_df['YearMonth'] = bb_df.index.strftime('%Y-%m')
     bb_df['Buy_Count'] = np.where(bb_df['Buy_Signal'], 1, 0)
     summary = bb_df.groupby('YearMonth').agg({
+        'Buy_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }).reset_index()
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
+    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    return summary
+
+def run_dual_momentum_backtest(
+    attack_df,
+    defense_df,
+    attack_label,
+    defense_label,
+    lookback_days,
+    initial_budget,
+    fee_rate_pct,
+    slippage_rate_pct,
+    defensive_mode="방어자산",
+    use_drip=False,
+):
+    """공격 자산과 방어 자산을 월별로 비교해 더 강한 자산에 배분하는 듀얼 모멘텀 전략."""
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+
+    combined = pd.DataFrame({
+        'Attack_Close': attack_df['종가'],
+        'Defense_Close': defense_df['종가'],
+        'Attack_Dividend': attack_df['배당금'] if use_drip and '배당금' in attack_df.columns else 0.0,
+        'Defense_Dividend': defense_df['배당금'] if use_drip and '배당금' in defense_df.columns else 0.0,
+    }).sort_index().ffill().dropna(subset=['Attack_Close', 'Defense_Close'])
+
+    if combined.empty:
+        return combined
+
+    combined['Attack_Momentum'] = combined['Attack_Close'] / combined['Attack_Close'].shift(lookback_days) - 1
+    combined['Defense_Momentum'] = combined['Defense_Close'] / combined['Defense_Close'].shift(lookback_days) - 1
+
+    rebalance_dates = combined.groupby(combined.index.to_period('M')).tail(1).index
+
+    combined['Target_Asset'] = pd.Series(index=combined.index, dtype=object)
+    for dt in rebalance_dates:
+        attack_momentum = combined.at[dt, 'Attack_Momentum']
+        defense_momentum = combined.at[dt, 'Defense_Momentum']
+        if pd.isna(attack_momentum) or pd.isna(defense_momentum):
+            target_asset = "CASH"
+        elif attack_momentum > defense_momentum and attack_momentum > 0:
+            target_asset = "ATTACK"
+        elif defensive_mode == "현금" and defense_momentum <= 0:
+            target_asset = "CASH"
+        else:
+            target_asset = "DEFENSE"
+        combined.at[dt, 'Target_Asset'] = target_asset
+
+    combined['Position'] = combined['Target_Asset'].shift(1).ffill().fillna("CASH")
+
+    attack_div_yield = combined['Attack_Dividend'] / combined['Attack_Close'].shift(1).fillna(combined['Attack_Close'])
+    defense_div_yield = combined['Defense_Dividend'] / combined['Defense_Close'].shift(1).fillna(combined['Defense_Close'])
+    combined['Attack_Return'] = (combined['Attack_Close'] / combined['Attack_Close'].shift(1).fillna(combined['Attack_Close'])) + attack_div_yield
+    combined['Defense_Return'] = (combined['Defense_Close'] / combined['Defense_Close'].shift(1).fillna(combined['Defense_Close'])) + defense_div_yield
+    combined['Cash_Return'] = 1.0
+
+    combined['Gross_Strategy_Return'] = np.select(
+        [
+            combined['Position'] == "ATTACK",
+            combined['Position'] == "DEFENSE",
+        ],
+        [
+            combined['Attack_Return'],
+            combined['Defense_Return'],
+        ],
+        default=combined['Cash_Return']
+    )
+
+    prev_position = combined['Position'].shift(1).fillna("CASH")
+    changed = combined['Position'] != prev_position
+    combined['Trade_Cost'] = np.select(
+        [
+            ~changed,
+            (prev_position == "CASH") | (combined['Position'] == "CASH"),
+        ],
+        [
+            0.0,
+            cost_rate,
+        ],
+        default=2 * cost_rate
+    )
+    combined['Strategy_Return'] = (combined['Gross_Strategy_Return'] - combined['Trade_Cost']).clip(lower=0)
+
+    hold_returns = combined['Attack_Return'].fillna(1.0).values
+    if len(hold_returns) > 0:
+        hold_returns[0] = hold_returns[0] - cost_rate
+    combined['Hold_Return'] = hold_returns
+
+    combined['Strategy_Cum_Return'] = (combined['Strategy_Return'].cumprod() - 1) * 100
+    combined['Hold_Cum_Return'] = (combined['Hold_Return'].cumprod() - 1) * 100
+    combined['Strategy_Balance'] = initial_budget * combined['Strategy_Return'].cumprod()
+    combined['Hold_Balance'] = initial_budget * combined['Hold_Return'].cumprod()
+    combined['Daily_Return_Pct'] = (combined['Strategy_Return'] - 1) * 100
+    combined['Selected_Asset'] = combined['Position'].map({
+        "ATTACK": attack_label,
+        "DEFENSE": defense_label,
+        "CASH": "현금",
+    })
+    return combined
+
+def calculate_dual_momentum_monthly_stats(dm_df):
+    """듀얼 모멘텀 전략의 월별 수익률과 월말 선택 자산을 요약합니다."""
+    stats_df = dm_df.copy()
+    stats_df['YearMonth'] = stats_df.index.strftime('%Y-%m')
+    summary = stats_df.groupby('YearMonth').agg({
+        'Selected_Asset': 'last',
+        'Attack_Momentum': 'last',
+        'Defense_Momentum': 'last',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod',
+    }).reset_index()
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
+    summary['Attack_Momentum'] = summary['Attack_Momentum'] * 100
+    summary['Defense_Momentum'] = summary['Defense_Momentum'] * 100
+    summary.columns = ['년-월', '선택 자산', '공격 모멘텀 (%)', '방어 모멘텀 (%)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
+    return summary
+
+def run_macd_backtest(df, fast_period=12, slow_period=26, signal_period=9, initial_budget=10000000, fee_rate_pct=0.15, slippage_rate_pct=0.10, use_drip=False):
+    """MACD 추세 전략 백테스트를 수행합니다."""
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    macd_df = df.copy()
+    
+    # 지수이동평균(EMA)을 기반으로 MACD 지표 산출
+    ema_fast = macd_df['종가'].ewm(span=fast_period, adjust=False).mean()
+    ema_slow = macd_df['종가'].ewm(span=slow_period, adjust=False).mean()
+    macd_df['MACD'] = ema_fast - ema_slow
+    macd_df['Signal'] = macd_df['MACD'].ewm(span=signal_period, adjust=False).mean()
+    macd_df['Histogram'] = macd_df['MACD'] - macd_df['Signal']
+    
+    # 매수 조건: MACD선이 Signal선 위에 있을 때 보유 유지
+    macd_df['Buy_Signal'] = macd_df['MACD'] > macd_df['Signal']
+    macd_df['Buy_Signal'] = np.where(pd.isna(macd_df['Signal']), False, macd_df['Buy_Signal'])
+    
+    prev_signals = macd_df['Buy_Signal'].shift(1).fillna(False)
+    
+    # 진입/이탈 거래 비용 반영
+    entry_cost = np.where((macd_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
+    exit_cost = np.where((macd_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
+    total_cost = entry_cost + exit_cost
+    
+    if use_drip and '배당금' in macd_df.columns:
+        div_yield = macd_df['배당금'] / macd_df['종가'].shift(1).fillna(macd_df['종가'])
+        strategy_div_yield = np.where(macd_df['Buy_Signal'], div_yield, 0.0)
+    else:
+        div_yield = 0.0
+        strategy_div_yield = 0.0
+        
+    macd_df['Strategy_Return'] = np.where(
+        macd_df['Buy_Signal'],
+        (macd_df['종가'] / macd_df['종가'].shift(1).fillna(macd_df['종가'])) - total_cost + strategy_div_yield,
+        1.0 - total_cost
+    )
+    macd_df['Strategy_Return'] = macd_df['Strategy_Return'].fillna(1.0)
+    
+    hold_returns = (macd_df['종가'] / macd_df['종가'].shift(1).fillna(macd_df['종가'])) + div_yield
+    hold_returns_array = hold_returns.fillna(1.0).values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    macd_df['Hold_Return'] = hold_returns_array
+    
+    macd_df['Strategy_Cum_Return'] = (macd_df['Strategy_Return'].cumprod() - 1) * 100
+    macd_df['Hold_Cum_Return'] = (macd_df['Hold_Return'].cumprod() - 1) * 100
+    macd_df['Strategy_Balance'] = initial_budget * macd_df['Strategy_Return'].cumprod()
+    macd_df['Hold_Balance'] = initial_budget * macd_df['Hold_Return'].cumprod()
+    
+    macd_df['Daily_Return_Pct'] = (macd_df['Strategy_Return'] - 1) * 100
+    return macd_df
+
+def calculate_macd_monthly_stats(macd_df):
+    """MACD 추세 전략의 월별 통계"""
+    macd_df = macd_df.copy()
+    macd_df['YearMonth'] = macd_df.index.strftime('%Y-%m')
+    macd_df['Buy_Count'] = np.where(macd_df['Buy_Signal'], 1, 0)
+    summary = macd_df.groupby('YearMonth').agg({
         'Buy_Count': 'sum',
         'Strategy_Return': 'prod',
         'Hold_Return': 'prod'

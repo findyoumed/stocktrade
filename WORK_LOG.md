@@ -56,5 +56,72 @@
 목표: 사이드바의 지수/ETF 리스트 영역과 종목 검색 입력창의 레이블 텍스트 및 아이콘을 통일감 있게 수정
 변경 파일: chapter3/stock_prediction_dashboard.py
 수행 작업: 1) st.sidebar.expander 라벨을 '🔍 지수/ETF 카테고리 검색'으로 변경 2) st.sidebar.text_input 라벨을 '🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)'으로 변경
-실행: streamlit run chapter3/stock_prediction_dashboard.py`n기대: 사이드바의 두 검색/입력 영역이 시각적으로 통일감을 주고 가독성이 높아짐
+실행: streamlit run chapter3/stock_prediction_dashboard.py
+기대: 사이드바의 두 검색/입력 영역이 시각적으로 통일감을 주고 가독성이 높아짐
 결과: ✅ 성공
+
+---
+
+## [2026-06-06 20:05] 변동성 돌파 전략(VBT) 배당금 반영 오류 해결 및 검증
+
+**LOG_ID: 20260606_2005**
+목표: 변동성 돌파 전략(VBT)의 백테스트 수익률 계산 시 배당금 재투자(DRIP) 설정이 켜져 있어도 배당수익률(`strategy_div_yield`)이 전략 일별 수익률(`Strategy_Return`)에 누락되는 오류를 수정하고 검증.
+변경 파일:
+- `chapter3/backtest_engine.py` (VBT 백테스트 엔진 로직 수정)
+- `chapter3/stock_prediction_dashboard.py` (대시보드 내 내장 VBT 백테스트 로직 수정)
+수행 작업:
+1. `run_vbt_backtest` 함수에서 `use_drip`이 참이고 `배당금` 컬럼이 존재할 때 `strategy_div_yield`를 계산하도록 로직 추가.
+2. 매수 진입 시점(`Buy_Signal`이 True인 날)에만 배당수익률이 주식 잔고에 재투자되도록 `Strategy_Return`에 `strategy_div_yield`를 더해 줌.
+3. 비거래일(신호 없음)의 fallback 수익률이 1.0에서 잘못 차감되지 않도록 1.0 유지 처리 확인.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 변동성 돌파 전략 백테스트 시 배당금 재투자(DRIP) 체크박스를 켜면 최종 수익률 및 잔고 지표가 배당금을 포함하여 정상적으로 상승함.
+결과: ✅ 성공
+
+---
+
+## [2026-06-06 20:21] MACD 추세 전략 추가 구현
+
+**LOG_ID: 20260606_2021**
+목표: 이동평균선(MA) 크로스 전략보다 민감도가 높고 퀀트 투자에 널리 활용되는 MACD 추세 추종 전략을 신규 전략으로 추가 구현.
+변경 파일:
+- `chapter3/backtest_engine.py` (MACD 지표 산출, 백테스트 및 월별 요약 통계 함수 추가)
+- `chapter3/stock_prediction_dashboard.py` (사이드바 선택 옵션, 슬라이더 파라미터 연동, 결과 시각화(주가+MACD 2단 차트) 구현)
+수행 작업:
+1. `backtest_engine.py`에 단기 EMA, 장기 EMA, Signal EMA 기반의 MACD 계산 및 시그널선 골든/데드 크로스 거래 연산 함수 구현.
+2. 대시보드 사이드바의 전략 선택 라디오 버튼에 "MACD 추세 전략"을 추가하고 관련 슬라이더(12, 26, 9 기본값) 배치.
+3. 성과 지표(Metrics), 누적 수익률 비교 추이 및 월별 통계 테이블에 연동 처리.
+4. 주가 차트 하단에 MACD선, Signal선, 히스토그램(오실레이터 막대 차트)이 연동되는 2단 보조지표 차트 시각화 구성.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 대시보드에서 MACD 추세 전략 선택 시 실시간 보조지표 차트가 렌더링되며 백테스트 성과 분석이 수행됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-06 21:18] 백테스트 실행하기 버튼 위치 이동
+
+**LOG_ID: 20260606_2118**
+목표: 사이드바에서 "🚀 백테스트 실행하기" 버튼을 "시작 날짜 (YYYYMMDD)" 입력 칸 바로 위로 배치 이동.
+변경 파일:
+- `chapter3/stock_prediction_dashboard.py` (버튼 렌더링 코드 위치 이동)
+수행 작업:
+- 원래 종목 코드 직접 입력 영역 바로 밑(라인 1123 부근)에 있던 버튼 생성 코드를 "💡 분석할 전략 선택" 라디오 버튼 바로 아래이자 "시작 날짜 (YYYYMMDD)" 입력 칸 바로 위로 순서를 변경함.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 사이드바 UI에서 백테스트 실행하기 버튼이 시작 날짜 위에 정확히 렌더링됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-06 21:36] 전략별 동적 설명 카드 추가
+
+**LOG_ID: 20260606_2136**
+목표: 사용자가 왼쪽 사이드바에서 전략을 바꿀 때마다 각 전략이 어떤 원리와 조건으로 작동하는지 우측 본문 상단에 설명 카드로 동적 노출하도록 개선.
+변경 파일:
+- `chapter3/stock_prediction_dashboard.py` (전략 설명 매핑 테이블 및 동적 카드 렌더링 코드 추가)
+수행 작업:
+- `STRATEGY_DESCRIPTIONS` 딕셔너리를 신설하여 머신러닝, 변동성 돌파, 듀얼 모멘텀, 이평선 골든크로스, RSI 반등, 볼린저 밴드, MACD 전략의 원리, 매매 규칙, 특징을 알기 쉬운 마크다운 텍스트로 정의함.
+- 사용자가 선택한 `strategy_choice`에 매칭되는 마크다운 설명을 본문 예외처리 및 데이터 검증 직전 단계에서 `st.info()`를 사용해 상시 표시하도록 구현함.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 라디오 버튼 클릭으로 전략을 전환할 때마다 본문 상단 설명 상자 내 텍스트가 즉각 업데이트되어 사용자가 바로 원리를 이해할 수 있음.
+결과: ✅ 성공
+
+
