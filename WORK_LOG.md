@@ -170,4 +170,83 @@
 기대: `sk` 검색창 입력 시 "알 수 없는 종목" 에러가 나지 않고 SK, SK하이닉스, SK텔레콤 등 관련 목록이 드롭다운에 모두 정상 팝업되며, `lg` 역시 LG 계열사들이 한 화면에 전부 표기됨.
 결과: ✅ 성공
 
+---
+
+## [2026-06-07 00:58] 월별 거래 요약 데이터 최신 날짜순(내림차순) 정렬 보완
+
+**LOG_ID: 20260607_0058**
+목표: 백테스트 실행 후 출력되는 '📅 월별 거래 요약 데이터' 및 '월별 전략별 수익률 대조 테이블'의 표시 순서를 현재(최신 년-월)가 맨 위로 오도록 내림차순 정렬 처리.
+변경 파일:
+- `chapter3/stock_prediction_dashboard.py` (각 전략별 테이블 렌더링 영역의 데이터프레임 정렬 로직 수정)
+수행 작업:
+- 머신러닝 단일, 보조지표 단일, 두 전략 통합 비교 모드 등 총 3군데의 월별 요약 표 출력 코드(`st.dataframe`) 직전에 `.sort_values(by="년-월", ascending=False)`를 일괄 적용함.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 대시보드 백테스트 실행 후 우측 월별 통계 테이블의 첫 행에 과거 가장 오래된 날짜 대신 가장 최근인 현재 시점(예: 2026년 6월 등)이 맨 위에 먼저 렌더링됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-07 01:04] 스토캐스틱/보조지표 백테스트 수익률 복리 버그 수정 및 최적화
+
+**LOG_ID: 20260607_0104**
+목표: 스토캐스틱 오실레이터, RSI, 일목균형표, ADX/DMI 등 `finalize_signal_backtest` 공용 백테스트 연산자를 타는 보조지표 매매 전략들에서 현금 보유 구간 및 매수/매도 시점의 주가 등락률 누적 방식이 잘못되어 수익률이 비정상적으로 높게 튀던 복리 왜곡 현상(Bug)을 수정.
+변경 파일:
+- `chapter3/stock_prediction_dashboard.py` (finalize_signal_backtest 공용 함수 전면 리팩토링)
+수행 작업:
+- 가격 등락률에 단순히 시그널을 곱해 계산하던 방식을 지양하고, 실제 포지션 상태(`position = True/False`)를 매 영업일마다 순회 추적하는 **실물 매매 시뮬레이터(Position State Tracker)** 구조로 전면 리팩토링함.
+- `현금 ➡️ 현금` 구간은 변동률 1.0(보존), `현금 ➡️ 주식(매수)` 및 `주식 ➡️ 현금(매도)` 전환 당일에는 해당 거래일의 가격 변동분 반영 및 매수/매도 거래비용(수수료+슬리피지)을 즉시 1회 차감하도록 구성함.
+- `주식 ➡️ 주식` 상태 유지 기간 동안만 매일 주가 변동률 및 배당금 재투자 수익이 복리로 올바르게 승산되도록 완벽 수정함.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 보조지표(스토캐스틱 등) 백테스트 실행 시 누적 수익률과 잔고 금액이 복리 버그 없이 실제 매수/매도 규칙 및 거래 비용에 완벽히 매칭되어 현실적이고 신뢰도 높은 성과 통계가 산출됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-07 01:08] 백테스트 엔진 및 보조지표 매매 미래 참조 편향(Look-ahead Bias) 해결
+
+**LOG_ID: 20260607_0108**
+목표: 스토캐스틱, RSI, 볼린저 밴드, 이동평균 골든크로스, MACD, 일목균형표, ADX/DMI, 엔벨로프 등 기술적 지표 기반 전략들이 당일 종가로 계산된 신호를 당일 등락률에 즉시 반영함으로써 발생하던 미래 참조 편향(Look-ahead Bias)을 제거하고, 현실적인 익일 매매 실행 시뮬레이션을 구현.
+변경 파일:
+- [stock_prediction_dashboard.py](file:///d:/work/stock/chapter3/stock_prediction_dashboard.py)
+- [backtest_engine.py](file:///d:/work/stock/chapter3/backtest_engine.py)
+수행 작업:
+1. `finalize_signal_backtest` (스토캐스틱, 일목균형표, ADX/DMI, 엔벨로프 공용), `run_rsi_backtest`, `run_bollinger_backtest`, `run_ma_cross_backtest` 함수에서 생성된 거래 신호(`Buy_Signal` 또는 `signals`)를 1영업일 시프트(`.shift(1).fillna(False)`)하도록 교정.
+2. `backtest_engine.py` 내의 `run_macd_backtest` 함수에서도 동일하게 거래 신호를 1영업일 시프트하여 익일 거래 집행을 반영하도록 수정.
+3. 이를 통해 당일 장 마감 기준 지표로 생성한 시그널이 당일의 주가 등락을 미리 선반영해 비정상적으로 높거나 왜곡된 수익률을 만들던 문제를 완벽히 해결.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 스토캐스틱 및 다른 기술적 지표 전략들의 수익률이 미래 참조 편향 없이 현실적이고 정확한 값으로 산출됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-07 01:10] 스토캐스틱 및 ADX/DMI 분모 0 방지(Division by Zero) 예외 처리 반영
+
+**LOG_ID: 20260607_0110**
+목표: 스토캐스틱 `%K` 계산 시 주가 횡보로 고가와 저가가 일치해 분모가 0이 되거나, ADX/DMI 계산 중 거래량이 전혀 없어 ATR이 0이 되는 극단적인 상황에서 발생할 수 있는 NaN/Inf 값 연산 오류를 예외 처리(0 방지)로 사전에 차단.
+변경 파일:
+- [stock_prediction_dashboard.py](file:///d:/work/stock/chapter3/stock_prediction_dashboard.py)
+수행 작업:
+1. `run_stochastic_backtest`에서 `%K` 계산식 분모인 `high_max - low_min` 값에 `.replace(0, 1e-10)` 적용.
+2. `run_adx_dmi_backtest`에서 `+DI`, `-DI` 계산식 분모인 `atr` 및 `dx` 계산식 분모인 `+DI + -DI` 값에 `.replace(0, 1e-10)` 적용하여 수치 계산 안정성 확보.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 모든 종목 및 모든 백테스트 기간 내에서 분모가 0이 됨으로 인한 수학적 연산 오류(NaN) 없이 안정적으로 실행됨.
+결과: ✅ 성공
+
+---
+
+## [2026-06-07 01:12] finalize_signal_backtest 매도일 현금 수익률 계산 오류 교정
+
+**LOG_ID: 20260607_0112**
+목표: `finalize_signal_backtest` 함수 내에서 포지션 상태가 주식에서 현금으로 전환되는 매도 당일(`prev_position=True` & `position=False`)에 주식 수익률인 `daily_price_return`이 계속 누산되던 논리적 오류를 제거하고, 매매 포지션에 맞게 현금 수익률(1.0)에서 수수료만 차감되도록 공식 수정.
+변경 파일:
+- [stock_prediction_dashboard.py](file:///d:/work/stock/chapter3/stock_prediction_dashboard.py)
+수행 작업:
+- `finalize_signal_backtest`에서 매도 당일의 전략 수익률 `ret`을 `daily_price_return.iloc[i] - cost_rate + d_yield`에서 `1.0 - cost_rate`로 변경하여 현금 보유 상태의 수익률이 제대로 유지되도록 보완.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 스토캐스틱, 일목균형표, ADX/DMI, 엔벨로프 전략 등 공용 백테스트 연산자를 사용하는 모든 전략의 매도 시점 수익률 연산이 수학적으로 완벽히 교정되어 신뢰도가 극대화됨.
+결과: ✅ 성공
+
+
+
+
 

@@ -557,8 +557,10 @@ def run_macd_backtest(df, fast_period=12, slow_period=26, signal_period=9, initi
     macd_df['Histogram'] = macd_df['MACD'] - macd_df['Signal']
     
     # 매수 조건: MACD선이 Signal선 위에 있을 때 보유 유지
-    macd_df['Buy_Signal'] = macd_df['MACD'] > macd_df['Signal']
-    macd_df['Buy_Signal'] = np.where(pd.isna(macd_df['Signal']), False, macd_df['Buy_Signal'])
+    raw_signal = macd_df['MACD'] > macd_df['Signal']
+    raw_signal = np.where(pd.isna(macd_df['Signal']), False, raw_signal)
+    # [LOG: 20260607_0106] 미래 참조 편향 방지를 위해 시그널을 1영업일 shift
+    macd_df['Buy_Signal'] = pd.Series(raw_signal, index=macd_df.index).shift(1).fillna(False)
     
     prev_signals = macd_df['Buy_Signal'].shift(1).fillna(False)
     
