@@ -268,3 +268,21 @@
 실행: `streamlit run chapter3/stock_prediction_dashboard.py`
 기대: 대시보드 내에서 새로 추가된 두 전략이 정상 동작하며, DCA 누적 투자금액 대비 평가액 추이 차트 및 월별 통계 테이블이 오차 없이 렌더링됨.
 결과: ✅ 성공
+
+---
+
+## [2026-06-07 23:02] 최대 연속 손실 일수 지표 추가, 입력 검증 정규식 도입 및 매도 거래세(0.18%) 반영
+
+**LOG_ID: 20260607_2302**
+목표: 최대 연속 손실 일수(Max Consecutive Losses) 지표, 종목명 입력값 정규식 검증(Input Validation), 및 현실성 극대화를 위한 매도 시 거래세(0.18%) 공제 기능을 추가 연동.
+변경 파일:
+- [backtest_engine.py](file:///d:/work/stock/chapter3/backtest_engine.py) (calculate_max_consecutive_losses 함수 신설 및 매도 거래세 추가 차감)
+- [stock_prediction_dashboard.py](file:///d:/work/stock/chapter3/stock_prediction_dashboard.py) (정규식 기반 티커 검증 헬퍼 신설 및 사이드바 입력 차단, 성과 요약 테이블에 최대 연속 손실 지표 행 추가)
+수행 작업:
+1. `backtest_engine.py`에 일간 마이너스 등락이 연속된 최대 영업일수를 구하는 판다스 연산 함수 구현 및 모든 전략의 매도 거래 수수료에 거래세 `0.18%` 가산.
+2. `stock_prediction_dashboard.py`에 `^[가-힣a-zA-Z0-9\s()&./\-]*$` 정규식으로 허용된 한글/영문/숫자/공백/기본 특수문자만 입력받고, 이외 문자나 30자 초과 입력 시 `st.stop()`으로 차단하는 방어 로직 구현.
+3. 요약 지표 화면(Metrics)의 3번째 행에 전략/보유 각각의 '최대 연속 손실' 일수를 렌더링하도록 갱신.
+4. 브라우저 테스트를 통해 특수문자 `;` 입력 시 정상적으로 사이드바 경고문이 출력되는지와 백테스트 시 연속 손실 일수가 정확하게 계산되어 출력되는지를 검증 완료.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 대시보드 종목 입력창에 위험 문자 입력 시 안전하게 검증 차단되며, 백테스트 결과 요약 화면에 신규 지표들이 누락 없이 표시됨.
+결과: ✅ 성공
