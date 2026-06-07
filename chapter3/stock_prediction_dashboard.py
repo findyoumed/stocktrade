@@ -25,6 +25,20 @@ from backtest_engine import (
 # [LOG: 20260607_2234] 적립식 존버 물타기(DCA) 및 200일선+MACD 필터 전략 추가
 
 
+import re
+
+def validate_ticker_input(text, field_name="종목명"):
+    if not text:
+        return True
+    if len(text) > 30:
+        st.sidebar.error(f"⚠️ {field_name}이 너무 깁니다. (최대 30자)")
+        return False
+    # 한글, 영문, 숫자, 공백, 괄호(), &, /, ., - 만 허용 (한영 혼합 가능)
+    if not re.match(r"^[가-힣a-zA-Z0-9\s()&./\-]*$", text):
+        st.sidebar.error(f"⚠️ {field_name}에 허용되지 않은 특수문자가 포함되어 있습니다. (한글, 영문, 숫자, 공백, 괄호, &, /, ., - 만 허용)")
+        return False
+    return True
+
 UNKNOWN_TICKER_NAME = "알 수 없는 종목"
 INVALID_TICKER_HINTS = {
     "396580": "ACE 미국30년국채액티브(H)의 종목코드는 453850입니다."
@@ -1630,8 +1644,8 @@ def finalize_signal_backtest(signal_df, initial_budget, fee_rate_pct, slippage_r
             # 현금 -> 주식 (매수 진입): 당일은 시가 매수 진입으로 가정하여 종가 변화량 반영 및 매수 수수료 차감
             ret = daily_price_return.iloc[i] - cost_rate + d_yield
         elif prev_position and not position:
-            # 주식 -> 현금 (매도 청산): 당일은 현금 보유 상태이므로 주가 변동을 반영하지 않고 수수료만 차감
-            ret = 1.0 - cost_rate
+            # 주식 -> 현금 (매도 청산): 수수료 + 매도 거래세(0.18%) 차감
+            ret = 1.0 - (cost_rate + 0.18 / 100)
         else:
             # 주식 -> 주식 (보유 유지): 주가 등락률 및 배당 재투자 반영
             ret = daily_price_return.iloc[i] + d_yield
@@ -1888,6 +1902,7 @@ with st.sidebar.expander("🔍 지수/ETF 카테고리 검색", expanded=False):
 
 # 🔍 공통 종목 코드 직접 입력
 ticker_input = st.sidebar.text_input("🔍 종목 코드/종목명 직접 입력 (예: SPY, 삼성전자, 005930)", key="target_ticker")
+if not validate_ticker_input(ticker_input, "종목 입력"): st.stop()
 ticker_matches = search_local_tickers(ticker_input)
 
 # lg, sk 등 대기업 그룹사 2글자 영어 명칭이 미국 주식 티커(예: SPY)로 오인되어 
@@ -2029,6 +2044,7 @@ elif strategy_choice == "듀얼 모멘텀 전략":
     )
     if dm_asset_option == "직접 입력":
         dm_defense_ticker = st.sidebar.text_input("비교/방어 자산 티커 직접 입력", "IEF")
+        if not validate_ticker_input(dm_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
     else:
         dm_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[dm_asset_option]
         st.sidebar.caption(f"선택된 비교 자산: {dm_defense_ticker}")
@@ -2087,6 +2103,7 @@ elif strategy_choice == "200일선 + MACD 추세 필터 전략":
         sma_macd_defense_ticker = "CASH"
     elif sma_macd_defense_option == "직접 입력":
         sma_macd_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT")
+        if not validate_ticker_input(sma_macd_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
         sma_macd_defensive_mode = "방어자산"
     else:
         sma_macd_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[sma_macd_defense_option]
