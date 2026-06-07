@@ -250,3 +250,21 @@
 
 
 
+
+---
+
+## [2026-06-07 22:34] 적립식 존버 물타기(DCA) 및 200일선+MACD 필터 전략 추가
+
+**LOG_ID: 20260607_2234**
+목표: 적립식 존버 물타기 (DCA) 전략 및 200일선 + MACD 추세 필터 전략을 대시보드 및 백테스트 엔진에 추가 구현하고 성과를 검증.
+변경 파일:
+- [backtest_engine.py](file:///d:/work/stock/chapter3/backtest_engine.py) (DCA 및 200일선+MACD 전략 핵심 함수 추가)
+- [stock_prediction_dashboard.py](file:///d:/work/stock/chapter3/stock_prediction_dashboard.py) (DCA 및 200일선+MACD 전략 UI 연동 및 차트, 통계 표시 추가)
+수행 작업:
+1. `backtest_engine.py`에 금액가중수익률(MWR) 및 시간가중수익률(TWR)을 각각 추적하는 적립식 DCA 백테스트 시뮬레이션 구현.
+2. `backtest_engine.py`에 200일 이평선 장기 추세와 MACD 시그널을 조합해 현금 또는 방어자산(TLT 등)으로 동적 대피하는 필터 백테스트 구현.
+3. `stock_prediction_dashboard.py`에 두 전략의 사이드바 파라미터 제어, 설명문구, Plotly 자산 추이 및 MACD 오실레이터 차트 시각화, 그리고 테이블 서식 포맷터 구현.
+4. 브라우저 테스트를 통해 삼성전자(005930) 종목에 대해 두 전략 모두 무오류로 연산 및 렌더링됨을 검증 완료.
+실행: `streamlit run chapter3/stock_prediction_dashboard.py`
+기대: 대시보드 내에서 새로 추가된 두 전략이 정상 동작하며, DCA 누적 투자금액 대비 평가액 추이 차트 및 월별 통계 테이블이 오차 없이 렌더링됨.
+결과: ✅ 성공

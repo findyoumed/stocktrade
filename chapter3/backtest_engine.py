@@ -1,4 +1,5 @@
 # [LOG: 20260604_1952]
+# [LOG: 20260607_2234] 적립식 존버 물타기(DCA) 및 200일선+MACD 필터 전략 추가
 import numpy as np
 import pandas as pd
 import streamlit as st

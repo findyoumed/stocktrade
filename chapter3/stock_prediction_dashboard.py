@@ -22,6 +22,8 @@ from backtest_engine import (
 )
 
 # [LOG: 20260604_1357]
+# [LOG: 20260607_2234] 적립식 존버 물타기(DCA) 및 200일선+MACD 필터 전략 추가
+
 
 UNKNOWN_TICKER_NAME = "알 수 없는 종목"
 INVALID_TICKER_HINTS = {
