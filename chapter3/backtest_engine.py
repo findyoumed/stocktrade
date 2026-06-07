@@ -1093,3 +1093,185 @@ def calculate_max_consecutive_losses(returns_series):
     is_loss = returns_series < 1.0
     consecutive = is_loss.groupby((~is_loss).cumsum()).cumsum()
     return int(consecutive.max())
+
+
+def run_custom_static_allocation_backtest(
+    asset_data,
+    target_weights,
+    initial_budget,
+    fee_rate_pct,
+    slippage_rate_pct,
+    rebalance_frequency="M",
+):
+    # [LOG: 20260607_2350] 사용자 정의 정적 자산배분 백테스트 엔진 구현
+    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
+    
+    # 1. 가격 데이터 결합
+    prices = pd.DataFrame({
+        ticker: df["종가"]
+        for ticker, df in asset_data.items()
+    }).sort_index().ffill().dropna()
+    
+    if prices.empty:
+        return pd.DataFrame()
+        
+    tickers = list(target_weights.keys())
+    
+    # 리밸런싱 시그널 생성
+    if rebalance_frequency == "M":
+        rebalance_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
+    elif rebalance_frequency == "Q":
+        rebalance_dates = prices.groupby(prices.index.to_period("Q")).tail(1).index
+    elif rebalance_frequency == "Y":
+        rebalance_dates = prices.groupby(prices.index.to_period("Y")).tail(1).index
+    else:
+        rebalance_dates = pd.Index([])
+        
+    # 결과 데이터프레임 초기화
+    out = pd.DataFrame(index=prices.index)
+    
+    # 일별 기록용 컬럼들
+    strategy_balances = []
+    strategy_returns = []
+    rebalance_signals = []
+    trade_costs = []
+    
+    # 각 자산별 가치, 비중, 수량 기록용 딕셔너리
+    asset_values_hist = {t: [] for t in tickers}
+    asset_weights_hist = {t: [] for t in tickers}
+    asset_shares_hist = {t: [] for t in tickers}
+    
+    # 초기 상태 설정
+    shares = {t: 0.0 for t in tickers}
+    cash = initial_budget
+    
+    # 첫 날 거래
+    first_date = prices.index[0]
+    first_prices = prices.loc[first_date]
+    
+    # 초기 매수 실행
+    total_cost_first = 0.0
+    for t in tickers:
+        target_val = initial_budget * target_weights[t]
+        cost = target_val * cost_rate
+        total_cost_first += cost
+        actual_buy_amount = target_val - cost
+        shares[t] = actual_buy_amount / first_prices[t]
+        
+    cash = 0.0
+    
+    # 루프 돌며 하루하루 계산
+    prev_portfolio_value = initial_budget
+    
+    for idx, date in enumerate(prices.index):
+        curr_prices = prices.loc[date]
+        
+        # 1. 일별 자산 가치 평가
+        asset_values = {t: shares[t] * curr_prices[t] for t in tickers}
+        sum_asset_values = sum(asset_values.values())
+        curr_portfolio_value = sum_asset_values + cash
+        
+        # 2. 리밸런싱 실행 여부 판단
+        is_rebalance_day = (date in rebalance_dates) and (idx > 0)
+        
+        trade_cost = 0.0
+        if is_rebalance_day:
+            # 리밸런싱 날에는 현재 총 자산을 기준으로 목표 비중만큼 재분배
+            target_values = {t: curr_portfolio_value * target_weights[t] for t in tickers}
+            for t in tickers:
+                trade_val = target_values[t] - asset_values[t]
+                trade_cost += abs(trade_val) * cost_rate
+                
+            curr_portfolio_value_after_cost = curr_portfolio_value - trade_cost
+            for t in tickers:
+                final_target_val = curr_portfolio_value_after_cost * target_weights[t]
+                shares[t] = final_target_val / curr_prices[t]
+                asset_values[t] = final_target_val
+            
+            cash = 0.0
+            sum_asset_values = curr_portfolio_value_after_cost
+            curr_portfolio_value = curr_portfolio_value_after_cost
+            
+        # 3. 일별 수익률 계산
+        if idx == 0:
+            daily_return = curr_portfolio_value / initial_budget
+        else:
+            daily_return = curr_portfolio_value / prev_portfolio_value
+            
+        strategy_returns.append(daily_return)
+        strategy_balances.append(curr_portfolio_value)
+        rebalance_signals.append(is_rebalance_day)
+        trade_costs.append(trade_cost if idx > 0 else total_cost_first)
+        
+        # 자산별 상태 기록
+        for t in tickers:
+            asset_values_hist[t].append(asset_values[t])
+            asset_weights_hist[t].append(asset_values[t] / curr_portfolio_value if curr_portfolio_value > 0 else 0.0)
+            asset_shares_hist[t].append(shares[t])
+            
+        prev_portfolio_value = curr_portfolio_value
+        
+    # 결과 df에 값 매핑
+    out['Strategy_Return'] = strategy_returns
+    out['Strategy_Cum_Return'] = (pd.Series(strategy_balances, index=out.index) / initial_budget - 1.0) * 100
+    out['Strategy_Balance'] = strategy_balances
+    out['Rebalance_Signal'] = rebalance_signals
+    out['Trade_Cost'] = trade_costs
+    out['Daily_Return_Pct'] = (out['Strategy_Return'] - 1.0) * 100
+    
+    # 단순 보유 (첫 번째 입력된 자산 기준)
+    benchmark_ticker = tickers[0]
+    bench_prices = prices[benchmark_ticker]
+    out['Hold_Return'] = bench_prices / bench_prices.shift(1).fillna(bench_prices)
+    hold_returns_array = out['Hold_Return'].values
+    if len(hold_returns_array) > 0:
+        hold_returns_array[0] = hold_returns_array[0] - cost_rate
+    out['Hold_Return'] = hold_returns_array
+    out['Hold_Cum_Return'] = (out['Hold_Return'].cumprod() - 1.0) * 100
+    out['Hold_Balance'] = initial_budget * out['Hold_Return'].cumprod()
+    
+    out['Selected_Asset'] = benchmark_ticker
+    
+    # 자산별 데이터 컬럼 추가
+    for t in tickers:
+        out[f"{t}_Value"] = asset_values_hist[t]
+        out[f"{t}_Weight"] = asset_weights_hist[t]
+        out[f"{t}_Shares"] = asset_shares_hist[t]
+        
+    return out
+
+
+def calculate_custom_static_allocation_monthly_stats(result_df, tickers):
+    # [LOG: 20260607_2350] 사용자 정의 정적 자산배분 월별 통계 함수 구현
+    stats_df = result_df.copy()
+    stats_df['YearMonth'] = stats_df.index.strftime('%Y-%m')
+    
+    # 월별 리밸런싱 횟수
+    stats_df['Rebalance_Count'] = np.where(stats_df['Rebalance_Signal'], 1, 0)
+    
+    # 월말 자산별 비중 계산용 agg 딕셔너리
+    agg_dict = {
+        'Rebalance_Count': 'sum',
+        'Strategy_Return': 'prod',
+        'Hold_Return': 'prod'
+    }
+    for t in tickers:
+        agg_dict[f"{t}_Weight"] = 'last'
+        
+    summary = stats_df.groupby('YearMonth').agg(agg_dict).reset_index()
+    
+    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1.0) * 100
+    summary['Hold_Return'] = (summary['Hold_Return'] - 1.0) * 100
+    
+    rename_cols = {
+        'YearMonth': '년-월',
+        'Rebalance_Count': '리밸런싱 횟수 (회)',
+        'Strategy_Return': '전략 수익률 (%)',
+        'Hold_Return': '단순 보유 수익률 (%)'
+    }
+    for t in tickers:
+        rename_cols[f"{t}_Weight"] = f"월말 {t} 비중 (%)"
+        summary[f"{t}_Weight"] = summary[f"{t}_Weight"] * 100
+        
+    summary = summary.rename(columns=rename_cols)
+    return summary

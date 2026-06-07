@@ -19,6 +19,8 @@ from backtest_engine import (
     run_sma_macd_filter_backtest,
     run_dca_backtest,
     calculate_dca_monthly_stats,
+    run_custom_static_allocation_backtest,
+    calculate_custom_static_allocation_monthly_stats,
 )
 
 # [LOG: 20260604_1357]
@@ -1983,6 +1985,7 @@ strategy_choice = st.sidebar.radio(
         "일목균형표 전환/기준선 전략",
         "ADX/DMI 추세 전략",
         "엔벨로프 반등 전략",
+        "사용자 정의 정적 자산배분 전략",
         "영구 포트폴리오 전략",
         "올웨더 포트폴리오 전략"
     ]
@@ -2164,6 +2167,41 @@ elif strategy_choice == "엔벨로프 반등 전략":
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
     bb_period, bb_std = 20, 2.0
     ma_short, ma_long = 20, 60
+elif strategy_choice == "사용자 정의 정적 자산배분 전략":
+    st.sidebar.markdown("### 📊 포트폴리오 자산 및 비중 설정")
+    custom_tickers = []
+    custom_weights = {}
+    
+    # 5개 자산 입력 받음
+    default_vals = [("VOO", 50), ("QQQ", 30), ("TLT", 20), ("", 0), ("", 0)]
+    for i in range(5):
+        def_t, def_w = default_vals[i]
+        col_t, col_w = st.sidebar.columns([2, 1])
+        with col_t:
+            t_input = st.text_input(f"자산 {i+1} 티커", value=def_t, key=f"custom_t_{i}")
+        with col_w:
+            w_input = st.number_input(f"비중 {i+1} (%)", min_value=0, max_value=100, value=def_w, step=5, key=f"custom_w_{i}")
+        
+        t_clean = t_input.strip().upper()
+        if t_clean and w_input > 0:
+            custom_tickers.append(t_clean)
+            custom_weights[t_clean] = w_input / 100.0
+            
+    total_custom_weight = sum(custom_weights.values()) * 100
+    if total_custom_weight == 100.0:
+        st.sidebar.success(f"비중 합계: {total_custom_weight:.2f}% 정상")
+    else:
+        st.sidebar.warning(f"비중 합계가 100%가 아닙니다. 현재 합계: {total_custom_weight:.2f}%")
+        
+    rebalance_freq_label = st.sidebar.radio("리밸런싱 주기", options=["월말", "분기말", "연말", "리밸런싱 없음"], index=0)
+    freq_map = {"월말": "M", "분기말": "Q", "연말": "Y", "리밸런싱 없음": None}
+    custom_rebalance_frequency = freq_map[rebalance_freq_label]
+    
+    window_size = 90
+    K = 0.5
+    rsi_period, buy_rsi, sell_rsi = 14, 30, 70
+    bb_period, bb_std = 20, 2.0
+    ma_short, ma_long = 20, 60
 elif strategy_choice == "영구 포트폴리오 전략":
     permanent_assets = {"SPY": 0.25, "TLT": 0.25, "GLD": 0.25, "BIL": 0.25}
     st.sidebar.caption("기본 구성: SPY 25%, TLT 25%, GLD 25%, BIL 25%")
@@ -2309,6 +2347,11 @@ STRATEGY_DESCRIPTIONS = {
     **📎 엔벨로프 반등 전략**
     - **원리**: 이동평균선 상하단 밴드에서 과매도 반등을 포착합니다.
     - **매매 규칙**: 하단 밴드 위로 회복하면 매수하고 중심선 회복 시 매도합니다.
+    """,
+    "사용자 정의 정적 자산배분 전략": """
+    **📊 사용자 정의 정적 자산배분 전략**
+    - **원리**: 사용자가 직접 ETF 티커와 비중을 설정하여 포트폴리오를 구성하고, 선택한 주기마다 목표 비중으로 리밸런싱합니다.
+    - **특징**: 자산배분을 정적으로 가져가면서 주기적인 리밸런싱을 통해 변동성을 낮추고 복리 효과를 극대화합니다.
     """,
     "영구 포트폴리오 전략": """
     **🧱 영구 포트폴리오 전략**
@@ -2563,6 +2606,50 @@ else:
                 total_buys = np.sum(generic_df['Buy_Signal'] & (~generic_df['Buy_Signal'].shift(1).fillna(False)))
                 total_days = len(generic_df)
 
+            elif strategy_choice == "사용자 정의 정적 자산배분 전략":
+                if not custom_tickers:
+                    st.error("❌ 유효한 자산이 입력되지 않았습니다.")
+                    st.stop()
+                if len(set(custom_tickers)) != len(custom_tickers):
+                    st.error("❌ 중복된 티커가 존재합니다. 서로 다른 티커를 입력해 주세요.")
+                    st.stop()
+                if total_custom_weight != 100.0:
+                    st.error(f"❌ 비중 합계가 100%가 아닙니다. (현재: {total_custom_weight:.2f}%)")
+                    st.stop()
+                
+                # 티커 유효성 검증
+                for t in custom_tickers:
+                    if not validate_ticker_input(t, f"자산 {t}"):
+                        st.stop()
+                        
+                asset_data = {}
+                with st.spinner("📡 포트폴리오 구성 ETF 데이터를 불러오는 중..."):
+                    for asset_ticker in custom_tickers:
+                        resolved_code = resolve_ticker_input(asset_ticker)
+                        asset_df = load_data(start_date, end_date, resolved_code)
+                        if asset_df.empty:
+                            st.error(f"❌ {asset_ticker} ({resolved_code}) 데이터를 불러오지 못했습니다.")
+                            st.stop()
+                        asset_data[asset_ticker] = asset_df
+                
+                generic_df = run_custom_static_allocation_backtest(
+                    asset_data=asset_data,
+                    target_weights=custom_weights,
+                    initial_budget=initial_budget,
+                    fee_rate_pct=fee_rate,
+                    slippage_rate_pct=slippage_rate,
+                    rebalance_frequency=custom_rebalance_frequency
+                )
+                generic_label = "📊 사용자 정의 자산배분"
+                if generic_df.empty:
+                    st.error("❌ 포트폴리오 구성 자산의 공통 거래일 데이터가 부족합니다.")
+                    st.stop()
+                strategy_final_return = generic_df['Strategy_Cum_Return'].iloc[-1]
+                hold_final_return = generic_df['Hold_Cum_Return'].iloc[-1]
+                strategy_final_balance = generic_df['Strategy_Balance'].iloc[-1]
+                hold_final_balance = generic_df['Hold_Balance'].iloc[-1]
+                total_buys = np.sum(generic_df['Rebalance_Signal'])
+                total_days = len(generic_df)
             elif strategy_choice in ["영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
                 portfolio_assets = permanent_assets if strategy_choice == "영구 포트폴리오 전략" else allweather_assets
                 asset_data = {}
@@ -2660,7 +2747,7 @@ else:
                 with col4:
                     st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
                     
-            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "듀얼 모멘텀 전략", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략", "MACD 추세 전략", "200일선 + MACD 추세 필터 전략", "적립식 존버 물타기 (DCA) 전략", "스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
+            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "듀얼 모멘텀 전략", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략", "MACD 추세 전략", "200일선 + MACD 추세 필터 전략", "적립식 존버 물타기 (DCA) 전략", "스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "사용자 정의 정적 자산배분 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
                 strategy_label_map = {
                     "변동성 돌파 전략 (Larry Williams)": "⚡ 변동성 돌파",
                     "듀얼 모멘텀 전략": "🧭 듀얼 모멘텀",
@@ -2670,6 +2757,7 @@ else:
                     "MACD 추세 전략": "📊 MACD 추세",
                     "200일선 + MACD 추세 필터 전략": "📊 200일선+MACD",
                     "적립식 존버 물타기 (DCA) 전략": "📅 적립식 DCA",
+                    "사용자 정의 정적 자산배분 전략": "📊 사용자 정의 자산배분",
                 }
                 strategy_label_name = strategy_label_map[strategy_choice] if strategy_choice in strategy_label_map else generic_label
                 with col1:
@@ -2677,7 +2765,10 @@ else:
                 with col2:
                     st.metric(label="📈 단순 보유 최종 잔고 (수익률)", value=f"{hold_final_balance:,.0f} 원", delta=f"{hold_final_return:+.2f}%")
                 with col3:
-                    st.metric(label="🛒 총 매매 거래 횟수", value=f"{total_buys} 회", delta=f"참여율: {(total_buys/total_days)*100:.1f}%")
+                    if strategy_choice in ["사용자 정의 정적 자산배분 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
+                        st.metric(label="🛒 총 리밸런싱 횟수", value=f"{total_buys} 회", delta=f"참여율: {(total_buys/total_days)*100:.1f}%")
+                    else:
+                        st.metric(label="🛒 총 매매 거래 횟수", value=f"{total_buys} 회", delta=f"참여율: {(total_buys/total_days)*100:.1f}%")
                 with col4:
                     st.metric(label="⏳ 총 분석 영업일 수", value=f"{total_days} 일")
                     
@@ -3160,7 +3251,7 @@ else:
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
                 ))
-            elif strategy_choice in ["스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
+            elif strategy_choice in ["스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "사용자 정의 정적 자산배분 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
                 fig_ret.add_trace(go.Scatter(
                     x=generic_df.index, y=generic_df['Strategy_Cum_Return'], name=generic_label,
                     line=dict(color="#1f77b4", width=2.5),
@@ -3171,6 +3262,27 @@ else:
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate='<b>단순 보유</b><br>날짜: %{x}<br>수익률: %{y:.2f}%<extra></extra>'
                 ))
+                
+                if strategy_choice == "사용자 정의 정적 자산배분 전략":
+                    st.subheader("📊 자산별 비중 변화")
+                    fig_weights = go.Figure()
+                    for ticker in custom_tickers:
+                        fig_weights.add_trace(go.Scatter(
+                            x=generic_df.index,
+                            y=generic_df[f"{ticker}_Weight"] * 100,
+                            stackgroup="one",
+                            name=ticker,
+                            hovertemplate='<b>' + ticker + '</b><br>날짜: %{x}<br>비중: %{y:.2f}%<extra></extra>'
+                        ))
+                    fig_weights.update_layout(
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        margin=dict(l=20, r=20, t=30, b=20),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        xaxis=dict(showgrid=True, gridcolor="#e9ecef", title="날짜"),
+                        yaxis=dict(showgrid=True, gridcolor="#e9ecef", title="비중 (%)", range=[0, 100]),
+                        height=350
+                    )
+                    st.plotly_chart(fig_weights, use_container_width=True)
             else: # 통합 비교 모드
                 fig_ret.add_trace(go.Scatter(
                     x=ml_df.index, y=ml_df['Strategy_Cum_Return'], name="🤖 머신러닝 예측 전략", 
@@ -3229,7 +3341,7 @@ else:
                     display_df['월간 수익률 (%)'] = display_df['월간 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                     
-            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "듀얼 모멘텀 전략", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략", "MACD 추세 전략", "200일선 + MACD 추세 필터 전략", "적립식 존버 물타기 (DCA) 전략", "스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
+            elif strategy_choice in ["변동성 돌파 전략 (Larry Williams)", "듀얼 모멘텀 전략", "이동평균선 골든크로스 전략", "RSI 과매도 반등 전략", "볼린저 밴드 반등 전략", "MACD 추세 전략", "200일선 + MACD 추세 필터 전략", "적립식 존버 물타기 (DCA) 전략", "스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "사용자 정의 정적 자산배분 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
                 if strategy_choice == "변동성 돌파 전략 (Larry Williams)":
                     summary_stats = calculate_vbt_monthly_stats(vbt_df)
                     target_df = vbt_df
@@ -3254,6 +3366,9 @@ else:
                 elif strategy_choice == "적립식 존버 물타기 (DCA) 전략":
                     summary_stats = calculate_dca_monthly_stats(dca_df)
                     target_df = dca_df
+                elif strategy_choice == "사용자 정의 정적 자산배분 전략":
+                    summary_stats = calculate_custom_static_allocation_monthly_stats(generic_df, custom_tickers)
+                    target_df = generic_df
                 else:
                     is_portfolio = strategy_choice in ["영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]
                     summary_stats = calculate_signal_monthly_stats(generic_df, is_portfolio=is_portfolio)
@@ -3293,6 +3408,9 @@ else:
                         display_stats['공격 모멘텀 (%)'] = display_stats['공격 모멘텀 (%)'].map(lambda x: "" if pd.isna(x) else f"{x:+.2f}%")
                     if '방어 모멘텀 (%)' in display_stats.columns:
                         display_stats['방어 모멘텀 (%)'] = display_stats['방어 모멘텀 (%)'].map(lambda x: "" if pd.isna(x) else f"{x:+.2f}%")
+                    for col in display_stats.columns:
+                        if '비중 (%)' in col:
+                            display_stats[col] = display_stats[col].map('{:.2f}%'.format)
                     display_stats['전략 수익률 (%)'] = display_stats['전략 수익률 (%)'].map('{:+.2f}%'.format)
                     display_stats['단순 보유 수익률 (%)'] = display_stats['단순 보유 수익률 (%)'].map('{:+.2f}%'.format)
                     st.dataframe(display_stats, use_container_width=True, hide_index=True)
