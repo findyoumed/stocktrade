@@ -2113,6 +2113,7 @@ elif strategy_choice == "200일선 + MACD 추세 필터 전략":
     if sma_macd_defense_option == "현금":
         sma_macd_defensive_mode = "현금"
         sma_macd_defense_ticker = "CASH"
+        st.sidebar.caption("선택된 방어 자산: 현금 (CASH)")
     elif sma_macd_defense_option == "직접 입력":
         sma_macd_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT")
         if not validate_ticker_input(sma_macd_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
