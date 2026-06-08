@@ -698,7 +698,8 @@ def get_ticker_name(ticker_code):
                 return name
         except Exception:
             pass
-        return UNKNOWN_TICKER_NAME
+        # [LOG: 20260608_0942] yfinance info API 실패 시 알 수 없음이 아닌 티커명 반환하여 실행 보장
+        return ticker_code.upper()
             
     # 3. pykrx 백업 시도
     try:
@@ -720,7 +721,8 @@ def get_ticker_name(ticker_code):
         except Exception:
             pass
         
-    return UNKNOWN_TICKER_NAME
+    # [LOG: 20260608_0942] 모든 조회 실패 시 티커코드를 대문자로 반환하여 다운로드 실행 차단 방지
+    return ticker_code.upper()
 
 
 @st.cache_data
@@ -2478,7 +2480,7 @@ else:
                 with st.spinner(f"📡 비교/방어 자산 {defense_ticker_name} ({defense_ticker_code}) 데이터를 불러오는 중..."):
                     defense_df = load_data(start_date, end_date, defense_ticker_code)
 
-                if defense_ticker_name == UNKNOWN_TICKER_NAME or defense_df.empty:
+                if defense_df is None or defense_df.empty:
                     st.error("❌ 비교/방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
                     st.stop()
 
@@ -2524,7 +2526,7 @@ else:
                     with st.spinner(f"📡 방어 자산 {sma_macd_defense_name} ({sma_macd_defense_code}) 데이터를 불러오는 중..."):
                         sma_macd_defense_df = load_data(start_date, end_date, sma_macd_defense_code)
 
-                    if sma_macd_defense_name == UNKNOWN_TICKER_NAME or sma_macd_defense_df.empty:
+                    if sma_macd_defense_df is None or sma_macd_defense_df.empty:
                         st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
                         st.stop()
 
