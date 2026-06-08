@@ -2030,8 +2030,8 @@ sma_macd_sma = 200
 sma_macd_fast = 12
 sma_macd_slow = 26
 sma_macd_signal = 9
-sma_macd_defense_ticker = "TLT"
-sma_macd_defensive_mode = "방어자산"
+sma_macd_defense_ticker = "CASH"
+sma_macd_defensive_mode = "현금"
 sma_macd_signal_mode = "sma_exit"
 sma_macd_rebalance_frequency = "M"
 if strategy_choice == "머신러닝 롤링 예측 전략":
@@ -2107,7 +2107,7 @@ elif strategy_choice == "200일선 + MACD 추세 필터 전략":
     sma_macd_defense_option = st.sidebar.selectbox(
         "조건 불충족 시 이동할 자산",
         options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
-        index=DUAL_MOMENTUM_ASSET_OPTIONS.index("채권 (안전자산/피신처) | TLT - 장기 미국채 (20년+)") + 1,
+        index=0,
         help="현재 종목 입력창의 티커가 공격 자산이고, 조건이 깨지면 여기서 고른 자산 또는 현금으로 이동합니다.",
     )
     if sma_macd_defense_option == "현금":
