@@ -31,6 +31,16 @@ from backtest_engine import (
     calculate_dca_monthly_stats,
     run_custom_static_allocation_backtest,
     calculate_custom_static_allocation_monthly_stats,
+    run_ml_backtest,
+    calculate_ml_monthly_stats,
+    run_vbt_backtest,
+    calculate_vbt_monthly_stats,
+    run_ma_cross_backtest,
+    calculate_ma_cross_monthly_stats,
+    run_rsi_backtest,
+    calculate_rsi_monthly_stats,
+    run_bollinger_backtest,
+    calculate_bb_monthly_stats,
 )
 
 # [LOG: 20260604_1357]
@@ -1191,178 +1201,16 @@ def run_rolling_forecast(X, y, window_size, _progress_container=None):
     return pred_series
 
 # 5. 머신러닝 백테스트 수익률 계산 함수 (실전 수수료/슬리피지 비용 반영)
-def run_ml_backtest(df, pred_series, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
-    """예측 결과를 기반으로 머신러닝 매매 백테스트 수익률을 계산합니다."""
-    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    
-    backtest_df = pd.DataFrame({
-        'Actual_Close': df['종가'].loc[pred_series.index],
-        'Predicted_Close': pred_series,
-        'Prev_Close': df['종가'].shift(1).loc[pred_series.index],
-        '배당금': df['배당금'].loc[pred_series.index] if '배당금' in df.columns else 0.0
-    }).dropna()
-    
-    backtest_df['Buy_Signal'] = backtest_df['Predicted_Close'] > backtest_df['Prev_Close']
-    
-    # 이전 영업일 매수 포지션 여부
-    prev_signals = backtest_df['Buy_Signal'].shift(1).fillna(False)
-    
-    # 포지션 변동(진입/청산) 시 거래 비용 차감
-    entry_cost = np.where((backtest_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
-    exit_cost = np.where((backtest_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
-    total_cost = entry_cost + exit_cost
-    
-    # 배당 재투자 수익률 계산
-    if use_drip and '배당금' in backtest_df.columns:
-        div_yield = backtest_df['배당금'] / backtest_df['Prev_Close']
-        # 보유하고 있는 날(Buy_Signal == True)에만 배당 수익률 가산
-        strategy_div_yield = np.where(backtest_df['Buy_Signal'], div_yield, 0.0)
-    else:
-        div_yield = 0.0
-        strategy_div_yield = 0.0
-    
-    # 전략 일별 수익률 계산
-    backtest_df['Strategy_Return'] = np.where(
-        backtest_df['Buy_Signal'],
-        (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) - total_cost + strategy_div_yield,
-        1.0 - total_cost
-    )
-    
-    # 단순 보유 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
-    hold_returns = (backtest_df['Actual_Close'] / backtest_df['Prev_Close']) + div_yield
-    hold_returns_array = hold_returns.values
-    if len(hold_returns_array) > 0:
-        hold_returns_array[0] = hold_returns_array[0] - cost_rate
-    backtest_df['Hold_Return'] = hold_returns_array
-    
-    # 누적 수익률 계산 (%)
-    backtest_df['Strategy_Cum_Return'] = (backtest_df['Strategy_Return'].cumprod() - 1) * 100
-    backtest_df['Hold_Cum_Return'] = (backtest_df['Hold_Return'].cumprod() - 1) * 100
-    
-    # 최종 잔고 계산 (원)
-    backtest_df['Strategy_Balance'] = initial_budget * backtest_df['Strategy_Return'].cumprod()
-    backtest_df['Hold_Balance'] = initial_budget * backtest_df['Hold_Return'].cumprod()
-    
-    return backtest_df
+
 
 # 6. 머신러닝 월별 백테스트 통계 계산 함수
-def calculate_ml_monthly_stats(actual, predicted, backtest_df):
-    """머신러닝 예측 오차 및 월별 수익률 통계를 계산합니다."""
-    compare_df = pd.DataFrame({
-        'Actual': actual,
-        'Predicted': predicted,
-        'Strategy_Return': backtest_df['Strategy_Return']
-    }).dropna()
-    
-    compare_df['Absolute Error'] = (compare_df['Actual'] - compare_df['Predicted']).abs()
-    compare_df['YearMonth'] = compare_df.index.strftime('%Y-%m')
-    
-    # 월별 MAE
-    monthly_mae = compare_df.groupby('YearMonth')['Absolute Error'].mean().reset_index()
-    monthly_mae.columns = ['년-월', '평균 절대 오차 (원)']
-    
-    # 월별 오차율(%)
-    compare_df['Error Rate (%)'] = (compare_df['Absolute Error'] / compare_df['Actual']) * 100
-    monthly_error_rate = compare_df.groupby('YearMonth')['Error Rate (%)'].mean().reset_index()
-    monthly_error_rate.columns = ['년-월', '평균 오차율 (%)']
-    
-    # 월별 누적 수익률
-    monthly_return = compare_df.groupby('YearMonth')['Strategy_Return'].prod().reset_index()
-    monthly_return['Strategy_Return'] = (monthly_return['Strategy_Return'] - 1) * 100
-    monthly_return.columns = ['년-월', '월간 수익률 (%)']
-    
-    stats_df = pd.merge(monthly_mae, monthly_error_rate, on='년-월')
-    stats_df = pd.merge(stats_df, monthly_return, on='년-월')
-    return stats_df
+
 
 # 7. 변동성 돌파 전략 백테스트 계산 함수 (실전 수수료/슬리피지 비용 반영)
-def run_vbt_backtest(df, K, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
-    """변동성 돌파 전략 백테스트를 수행합니다. 
-    매일 당일 진입 후 당일 청산하므로 신호 발생 시 왕복(2회) 거래 비용이 차감됩니다.
-    """
-    # [LOG: 20260605_0950]
-    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    round_trip_cost = 2 * cost_rate
-    
-    vbt_df = df.copy()
-    
-    # OHLC 데이터 검증 (고가와 저가가 95% 이상 같은지 체크하여 종가만 채워진 부실 데이터 판별)
-    is_invalid_ohlc = (vbt_df['고가'] == vbt_df['저가']).mean() > 0.95
-    if is_invalid_ohlc:
-        st.session_state['vbt_warning'] = "⚠️ 경고: 현재 종목 데이터는 시가/고가/저가가 누락되어 종가로 채워진 '간소화/변형 버전' 데이터입니다. 래리 윌리엄스의 변동성 돌파 전략이 정상적으로 작동하지 않을 수 있습니다."
-    else:
-        st.session_state['vbt_warning'] = None
-        
-    # 변동성 폭 계산 (전일 고가 - 전일 저가)
-    vbt_df['Range'] = vbt_df['고가'].shift(1) - vbt_df['저가'].shift(1)
-    
-    # 매수 목표가 계산 (당일 시가 + 변동폭 * K)
-    vbt_df['Buy_Target'] = vbt_df['시가'] + (vbt_df['Range'] * K)
-    
-    # 매수 조건: 당일 고가가 매수 목표가를 초과했는지 판별
-    vbt_df['Buy_Signal'] = vbt_df['고가'] > vbt_df['Buy_Target']
-    
-    # 실제 매수 체결 가격 계산 (당일 시가가 목표가보다 높게 시작하면 시가에 체결, 그렇지 않으면 목표가 지정가 체결)
-    vbt_df['Buy_Price'] = np.where(
-        vbt_df['시가'] > vbt_df['Buy_Target'],
-        vbt_df['시가'],
-        vbt_df['Buy_Target']
-    )
-    
-    # [LOG: 20260605_1020] 배당금 재투자 (DRIP) 반영 조건 설정
-    if use_drip and '배당금' in vbt_df.columns:
-        div_yield = vbt_df['배당금'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])
-        strategy_div_yield = np.where(vbt_df['Buy_Signal'], div_yield, 0.0)
-    else:
-        div_yield = 0.0
-        strategy_div_yield = 0.0
-        
-    # 전략 일별 수익률 계산 (매수 체결 시 당일 종가 / 실제 매수 체결가 - 왕복 비용 + 배당 수익률 반영, 미체결 시 1.0)
-    vbt_df['Strategy_Return'] = np.where(
-        vbt_df['Buy_Signal'],
-        (vbt_df['종가'] / vbt_df['Buy_Price']) - round_trip_cost + strategy_div_yield,
-        1.0
-    )
-    
-    # 단순 보유(Buy & Hold) 일별 수익률 (최초 1회 매수 수수료 반영 + 배당 수익률 반영)
-    hold_returns = (vbt_df['종가'] / vbt_df['종가'].shift(1).fillna(vbt_df['종가'])) + div_yield
-    hold_returns_array = hold_returns.fillna(1.0).values
-    if len(hold_returns_array) > 0:
-        hold_returns_array[0] = hold_returns_array[0] - cost_rate
-    vbt_df['Hold_Return'] = hold_returns_array
-    
-    # 누적 수익률 계산 (%)
-    vbt_df['Strategy_Cum_Return'] = (vbt_df['Strategy_Return'].cumprod() - 1) * 100
-    vbt_df['Hold_Cum_Return'] = (vbt_df['Hold_Return'].cumprod() - 1) * 100
-    
-    # 최종 잔고 계산 (원)
-    vbt_df['Strategy_Balance'] = initial_budget * vbt_df['Strategy_Return'].cumprod()
-    vbt_df['Hold_Balance'] = initial_budget * vbt_df['Hold_Return'].cumprod()
-    
-    # 일별 수익률 변동 (%)
-    vbt_df['Daily_Return_Pct'] = (vbt_df['Strategy_Return'] - 1) * 100
-    
-    return vbt_df
+
 
 # 8. 변동성 돌파 전략 월별 백테스트 통계 계산 함수
-def calculate_vbt_monthly_stats(vbt_df):
-    """변동성 돌파 전략의 월간 매수 횟수 및 수익률 통계를 계산합니다."""
-    stats_df = vbt_df.copy()
-    stats_df['YearMonth'] = stats_df.index.strftime('%Y-%m')
-    
-    stats_df['Buy_Count'] = np.where(stats_df['Buy_Signal'], 1, 0)
-    
-    summary = stats_df.groupby('YearMonth').agg({
-        'Buy_Count': 'sum',
-        'Strategy_Return': 'prod',
-        'Hold_Return': 'prod'
-    }).reset_index()
-    
-    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
-    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
-    
-    summary.columns = ['년-월', '매수 횟수 (회)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
-    return summary
+
 
 # 9. 두 전략 월별 백테스트 요약 통계 계산 함수
 def calculate_combined_monthly_stats(ml_df, vbt_df):
@@ -1399,218 +1247,18 @@ def calculate_combined_monthly_stats(ml_df, vbt_df):
 
 # [LOG: 20260604_1725]
 # 10. 이동평균선 골든크로스 전략 백테스트 함수
-def run_ma_cross_backtest(df, short_period, long_period, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
-    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    ma_df = df.copy()
-    ma_df['SMA_Short'] = ma_df['종가'].rolling(window=short_period).mean()
-    ma_df['SMA_Long'] = ma_df['종가'].rolling(window=long_period).mean()
-    
-    # [LOG: 20260607_0106] 미래 참조 편향 방지를 위해 시그널을 1영업일 shift
-    raw_signal = ma_df['SMA_Short'] > ma_df['SMA_Long']
-    raw_signal = np.where(pd.isna(ma_df['SMA_Long']), False, raw_signal)
-    ma_df['Buy_Signal'] = pd.Series(raw_signal, index=ma_df.index).shift(1).fillna(False)
-    
-    prev_signals = ma_df['Buy_Signal'].shift(1).fillna(False)
-    
-    entry_cost = np.where((ma_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
-    exit_cost = np.where((ma_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
-    total_cost = entry_cost + exit_cost
-    
-    # 배당 재투자 수익률 계산
-    if use_drip and '배당금' in ma_df.columns:
-        div_yield = ma_df['배당금'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])
-        strategy_div_yield = np.where(ma_df['Buy_Signal'], div_yield, 0.0)
-    else:
-        div_yield = 0.0
-        strategy_div_yield = 0.0
-        
-    ma_df['Strategy_Return'] = np.where(
-        ma_df['Buy_Signal'],
-        (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) - total_cost + strategy_div_yield,
-        1.0 - total_cost
-    )
-    ma_df['Strategy_Return'] = ma_df['Strategy_Return'].fillna(1.0)
-    
-    hold_returns = (ma_df['종가'] / ma_df['종가'].shift(1).fillna(ma_df['종가'])) + div_yield
-    hold_returns_array = hold_returns.fillna(1.0).values
-    if len(hold_returns_array) > 0:
-        hold_returns_array[0] = hold_returns_array[0] - cost_rate
-    ma_df['Hold_Return'] = hold_returns_array
-    
-    ma_df['Strategy_Cum_Return'] = (ma_df['Strategy_Return'].cumprod() - 1) * 100
-    ma_df['Hold_Cum_Return'] = (ma_df['Hold_Return'].cumprod() - 1) * 100
-    ma_df['Strategy_Balance'] = initial_budget * ma_df['Strategy_Return'].cumprod()
-    ma_df['Hold_Balance'] = initial_budget * ma_df['Hold_Return'].cumprod()
-    
-    ma_df['Daily_Return_Pct'] = (ma_df['Strategy_Return'] - 1) * 100
-    return ma_df
 
-def calculate_ma_cross_monthly_stats(ma_df):
-    ma_df['YearMonth'] = ma_df.index.strftime('%Y-%m')
-    ma_df['Buy_Count'] = np.where(ma_df['Buy_Signal'], 1, 0)
-    summary = ma_df.groupby('YearMonth').agg({
-        'Buy_Count': 'sum',
-        'Strategy_Return': 'prod',
-        'Hold_Return': 'prod'
-    }).reset_index()
-    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
-    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
-    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
-    return summary
+
+
 
 # 11. RSI 과매도 반등 전략 백테스트 함수
-def run_rsi_backtest(df, period, buy_rsi, sell_rsi, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
-    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    rsi_df = df.copy()
-    delta = rsi_df['종가'].diff()
-    gain = delta.clip(lower=0).rolling(window=period).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
-    rs = gain / loss.replace(0, 1e-10)
-    rsi_df['RSI'] = 100 - (100 / (1 + rs))
-    
-    signals = []
-    position = False
-    for r in rsi_df['RSI'].values:
-        if pd.isna(r):
-            signals.append(False)
-        elif not position and r <= buy_rsi:
-            position = True
-            signals.append(True)
-        elif position and r >= sell_rsi:
-            position = False
-            signals.append(False)
-        else:
-            signals.append(position)
-            
-    # [LOG: 20260607_0106] 미래 참조 편향 방지를 위해 시그널을 1영업일 shift
-    rsi_df['Buy_Signal'] = pd.Series(signals, index=rsi_df.index).shift(1).fillna(False)
-    prev_signals = rsi_df['Buy_Signal'].shift(1).fillna(False)
-    
-    entry_cost = np.where((rsi_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
-    exit_cost = np.where((rsi_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
-    total_cost = entry_cost + exit_cost
-    
-    # 배당 재투자 수익률 계산
-    if use_drip and '배당금' in rsi_df.columns:
-        div_yield = rsi_df['배당금'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])
-        strategy_div_yield = np.where(rsi_df['Buy_Signal'], div_yield, 0.0)
-    else:
-        div_yield = 0.0
-        strategy_div_yield = 0.0
-        
-    rsi_df['Strategy_Return'] = np.where(
-        rsi_df['Buy_Signal'],
-        (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) - total_cost + strategy_div_yield,
-        1.0 - total_cost
-    )
-    rsi_df['Strategy_Return'] = rsi_df['Strategy_Return'].fillna(1.0)
-    
-    hold_returns = (rsi_df['종가'] / rsi_df['종가'].shift(1).fillna(rsi_df['종가'])) + div_yield
-    hold_returns_array = hold_returns.fillna(1.0).values
-    if len(hold_returns_array) > 0:
-        hold_returns_array[0] = hold_returns_array[0] - cost_rate
-    rsi_df['Hold_Return'] = hold_returns_array
-    
-    rsi_df['Strategy_Cum_Return'] = (rsi_df['Strategy_Return'].cumprod() - 1) * 100
-    rsi_df['Hold_Cum_Return'] = (rsi_df['Hold_Return'].cumprod() - 1) * 100
-    rsi_df['Strategy_Balance'] = initial_budget * rsi_df['Strategy_Return'].cumprod()
-    rsi_df['Hold_Balance'] = initial_budget * rsi_df['Hold_Return'].cumprod()
-    
-    rsi_df['Daily_Return_Pct'] = (rsi_df['Strategy_Return'] - 1) * 100
-    return rsi_df
 
-def calculate_rsi_monthly_stats(rsi_df):
-    rsi_df['YearMonth'] = rsi_df.index.strftime('%Y-%m')
-    rsi_df['Buy_Count'] = np.where(rsi_df['Buy_Signal'], 1, 0)
-    summary = rsi_df.groupby('YearMonth').agg({
-        'Buy_Count': 'sum',
-        'Strategy_Return': 'prod',
-        'Hold_Return': 'prod'
-    }).reset_index()
-    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
-    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
-    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
-    return summary
+
+
 
 # 12. 볼린저 밴드 반등 전략 백테스트 함수
-def run_bollinger_backtest(df, period, std_dev, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
-    cost_rate = (fee_rate_pct + slippage_rate_pct) / 100
-    bb_df = df.copy()
-    bb_df['Mid'] = bb_df['종가'].rolling(window=period).mean()
-    bb_df['Std'] = bb_df['종가'].rolling(window=period).std()
-    bb_df['Upper_Band'] = bb_df['Mid'] + (std_dev * bb_df['Std'])
-    bb_df['Lower_Band'] = bb_df['Mid'] - (std_dev * bb_df['Std'])
-    
-    signals = []
-    position = False
-    closes = bb_df['종가'].values
-    lowers = bb_df['Lower_Band'].values
-    uppers = bb_df['Upper_Band'].values
-    
-    for i in range(len(bb_df)):
-        c = closes[i]
-        l = lowers[i]
-        u = uppers[i]
-        if pd.isna(l) or pd.isna(u):
-            signals.append(False)
-        elif not position and c <= l:
-            position = True
-            signals.append(True)
-        elif position and c >= u:
-            position = False
-            signals.append(False)
-        else:
-            signals.append(position)
-            
-    # [LOG: 20260607_0106] 미래 참조 편향 방지를 위해 시그널을 1영업일 shift
-    bb_df['Buy_Signal'] = pd.Series(signals, index=bb_df.index).shift(1).fillna(False)
-    prev_signals = bb_df['Buy_Signal'].shift(1).fillna(False)
-    
-    entry_cost = np.where((bb_df['Buy_Signal'] == True) & (prev_signals == False), cost_rate, 0.0)
-    exit_cost = np.where((bb_df['Buy_Signal'] == False) & (prev_signals == True), cost_rate, 0.0)
-    total_cost = entry_cost + exit_cost
-    
-    # 배당 재투자 수익률 계산
-    if use_drip and '배당금' in bb_df.columns:
-        div_yield = bb_df['배당금'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])
-        strategy_div_yield = np.where(bb_df['Buy_Signal'], div_yield, 0.0)
-    else:
-        div_yield = 0.0
-        strategy_div_yield = 0.0
-        
-    bb_df['Strategy_Return'] = np.where(
-        bb_df['Buy_Signal'],
-        (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) - total_cost + strategy_div_yield,
-        1.0 - total_cost
-    )
-    bb_df['Strategy_Return'] = bb_df['Strategy_Return'].fillna(1.0)
-    
-    hold_returns = (bb_df['종가'] / bb_df['종가'].shift(1).fillna(bb_df['종가'])) + div_yield
-    hold_returns_array = hold_returns.fillna(1.0).values
-    if len(hold_returns_array) > 0:
-        hold_returns_array[0] = hold_returns_array[0] - cost_rate
-    bb_df['Hold_Return'] = hold_returns_array
-    
-    bb_df['Strategy_Cum_Return'] = (bb_df['Strategy_Return'].cumprod() - 1) * 100
-    bb_df['Hold_Cum_Return'] = (bb_df['Hold_Return'].cumprod() - 1) * 100
-    bb_df['Strategy_Balance'] = initial_budget * bb_df['Strategy_Return'].cumprod()
-    bb_df['Hold_Balance'] = initial_budget * bb_df['Hold_Return'].cumprod()
-    
-    bb_df['Daily_Return_Pct'] = (bb_df['Strategy_Return'] - 1) * 100
-    return bb_df
 
-def calculate_bb_monthly_stats(bb_df):
-    bb_df['YearMonth'] = bb_df.index.strftime('%Y-%m')
-    bb_df['Buy_Count'] = np.where(bb_df['Buy_Signal'], 1, 0)
-    summary = bb_df.groupby('YearMonth').agg({
-        'Buy_Count': 'sum',
-        'Strategy_Return': 'prod',
-        'Hold_Return': 'prod'
-    }).reset_index()
-    summary['Strategy_Return'] = (summary['Strategy_Return'] - 1) * 100
-    summary['Hold_Return'] = (summary['Hold_Return'] - 1) * 100
-    summary.columns = ['년-월', '매수 보유 일수 (일)', '전략 수익률 (%)', '단순 보유 수익률 (%)']
-    return summary
+
 
 
 def finalize_signal_backtest(signal_df, initial_budget, fee_rate_pct, slippage_rate_pct, use_drip=False):
@@ -2023,6 +1671,19 @@ use_drip = st.sidebar.checkbox("🔄 배당금 재투자 (DRIP) 반영", value=F
 
 # 5. 전략별 개별 설정
 st.sidebar.subheader("🎯 전략 파라미터")
+# [LOG: 20260608_1010] 모든 개별 단일 자산 전략의 방어 자산 변수 기본값 정의
+ml_defense_ticker = "CASH"
+ml_defensive_mode = "현금"
+vbt_defense_ticker = "CASH"
+vbt_defensive_mode = "현금"
+ma_defense_ticker = "CASH"
+ma_defensive_mode = "현금"
+rsi_defense_ticker = "CASH"
+rsi_defensive_mode = "현금"
+bb_defense_ticker = "CASH"
+bb_defensive_mode = "현금"
+macd_defense_ticker = "CASH"
+macd_defensive_mode = "현금"
 dm_lookback_days = 252
 dm_defense_ticker = "IEF"
 dm_defensive_mode = "방어자산"
@@ -2036,12 +1697,50 @@ sma_macd_signal_mode = "sma_exit"
 sma_macd_rebalance_frequency = "M"
 if strategy_choice == "머신러닝 롤링 예측 전략":
     window_size = st.sidebar.slider("학습 윈도우 크기 (영업일 기준)", min_value=30, max_value=120, value=90)
+    # [LOG: 20260608_1015] 머신러닝 전략 방어 자산 설정 UI
+    ml_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="ml_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if ml_defense_option == "현금":
+        ml_defensive_mode = "현금"
+        ml_defense_ticker = "CASH"
+    elif ml_defense_option == "직접 입력":
+        ml_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="ml_def_tick_input")
+        if not validate_ticker_input(ml_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        ml_defensive_mode = "방어자산"
+    else:
+        ml_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[ml_defense_option]
+        ml_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {ml_defense_ticker}")
     K = 0.5
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
     bb_period, bb_std = 20, 2.0
     ma_short, ma_long = 20, 60
 elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
     K = st.sidebar.slider("변동성 돌파 계수 (K)", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
+    # [LOG: 20260608_1016] 변동성 돌파 전략 방어 자산 설정 UI
+    vbt_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="vbt_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if vbt_defense_option == "현금":
+        vbt_defensive_mode = "현금"
+        vbt_defense_ticker = "CASH"
+    elif vbt_defense_option == "직접 입력":
+        vbt_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="vbt_def_tick_input")
+        if not validate_ticker_input(vbt_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        vbt_defensive_mode = "방어자산"
+    else:
+        vbt_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[vbt_defense_option]
+        vbt_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {vbt_defense_ticker}")
     window_size = 90
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
     bb_period, bb_std = 20, 2.0
@@ -2071,6 +1770,25 @@ elif strategy_choice == "듀얼 모멘텀 전략":
 elif strategy_choice == "이동평균선 골든크로스 전략":
     ma_short = st.sidebar.slider("단기 이동평균선 (일)", min_value=5, max_value=50, value=20, step=5)
     ma_long = st.sidebar.slider("장기 이동평균선 (일)", min_value=20, max_value=200, value=60, step=10)
+    # [LOG: 20260608_1017] 이동평균선 크로스 전략 방어 자산 설정 UI
+    ma_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="ma_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if ma_defense_option == "현금":
+        ma_defensive_mode = "현금"
+        ma_defense_ticker = "CASH"
+    elif ma_defense_option == "직접 입력":
+        ma_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="ma_def_tick_input")
+        if not validate_ticker_input(ma_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        ma_defensive_mode = "방어자산"
+    else:
+        ma_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[ma_defense_option]
+        ma_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {ma_defense_ticker}")
     window_size = 90
     K = 0.5
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
@@ -2079,6 +1797,25 @@ elif strategy_choice == "RSI 과매도 반등 전략":
     rsi_period = st.sidebar.slider("RSI 계산 기간 (일)", min_value=5, max_value=30, value=14, step=1)
     buy_rsi = st.sidebar.slider("매수 기준 RSI (이하)", min_value=10, max_value=50, value=30, step=5)
     sell_rsi = st.sidebar.slider("매도 기준 RSI (이상)", min_value=50, max_value=90, value=70, step=5)
+    # [LOG: 20260608_1018] RSI 전략 방어 자산 설정 UI
+    rsi_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="rsi_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if rsi_defense_option == "현금":
+        rsi_defensive_mode = "현금"
+        rsi_defense_ticker = "CASH"
+    elif rsi_defense_option == "직접 입력":
+        rsi_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="rsi_def_tick_input")
+        if not validate_ticker_input(rsi_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        rsi_defensive_mode = "방어자산"
+    else:
+        rsi_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[rsi_defense_option]
+        rsi_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {rsi_defense_ticker}")
     window_size = 90
     K = 0.5
     bb_period, bb_std = 20, 2.0
@@ -2086,6 +1823,25 @@ elif strategy_choice == "RSI 과매도 반등 전략":
 elif strategy_choice == "볼린저 밴드 반등 전략":
     bb_period = st.sidebar.slider("이동평균 기간 (일)", min_value=5, max_value=50, value=20, step=5)
     bb_std = st.sidebar.slider("표준편차 배수", min_value=1.0, max_value=3.0, value=2.0, step=0.1)
+    # [LOG: 20260608_1019] 볼린저 밴드 전략 방어 자산 설정 UI
+    bb_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="bb_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if bb_defense_option == "현금":
+        bb_defensive_mode = "현금"
+        bb_defense_ticker = "CASH"
+    elif bb_defense_option == "직접 입력":
+        bb_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="bb_def_tick_input")
+        if not validate_ticker_input(bb_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        bb_defensive_mode = "방어자산"
+    else:
+        bb_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[bb_defense_option]
+        bb_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {bb_defense_ticker}")
     window_size = 90
     K = 0.5
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
@@ -2094,6 +1850,25 @@ elif strategy_choice == "MACD 추세 전략":
     macd_fast = st.sidebar.slider("단기 EMA 기간 (일)", min_value=5, max_value=30, value=12, step=1)
     macd_slow = st.sidebar.slider("장기 EMA 기간 (일)", min_value=20, max_value=60, value=26, step=1)
     macd_signal = st.sidebar.slider("시그널 EMA 기간 (일)", min_value=3, max_value=20, value=9, step=1)
+    # [LOG: 20260608_1020] MACD 전략 방어 자산 설정 UI
+    macd_defense_option = st.sidebar.selectbox(
+        "조건 불충족 시 이동할 자산",
+        options=["현금", *DUAL_MOMENTUM_ASSET_OPTIONS],
+        index=0,
+        key="macd_defense_opt",
+        help="조건이 깨질 때 이동할 자산 또는 현금을 선택합니다."
+    )
+    if macd_defense_option == "현금":
+        macd_defensive_mode = "현금"
+        macd_defense_ticker = "CASH"
+    elif macd_defense_option == "직접 입력":
+        macd_defense_ticker = st.sidebar.text_input("방어 자산 티커 직접 입력", "TLT", key="macd_def_tick_input")
+        if not validate_ticker_input(macd_defense_ticker, "방어 자산 티커 직접 입력"): st.stop()
+        macd_defensive_mode = "방어자산"
+    else:
+        macd_defense_ticker = DUAL_MOMENTUM_TICKER_BY_OPTION[macd_defense_option]
+        macd_defensive_mode = "방어자산"
+        st.sidebar.caption(f"선택된 방어 자산: {macd_defense_ticker}")
     window_size = 90
     K = 0.5
     rsi_period, buy_rsi, sell_rsi = 14, 30, 70
@@ -2420,10 +2195,32 @@ else:
             
             # 머신러닝 모드 연산
             if strategy_choice == "머신러닝 롤링 예측 전략":
+                # [LOG: 20260608_1025] 머신러닝 전략 방어자산 데이터 로드 및 적용
+                ml_defense_df = None
+                ml_defense_code = "CASH"
+                if ml_defensive_mode == "방어자산":
+                    ml_defense_code = resolve_ticker_input(ml_defense_ticker)
+                    ml_defense_name = get_ticker_name(ml_defense_code)
+                    with st.spinner(f"📡 방어 자산 {ml_defense_name} ({ml_defense_code}) 데이터를 불러오는 중..."):
+                        ml_defense_df = load_data(start_date, end_date, ml_defense_code)
+                    if ml_defense_df is None or ml_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size, _progress_container=progress_area)
                 actual_close = df['종가'].loc[pred_series.index]
-                ml_df = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate, use_drip)
+                ml_df = run_ml_backtest(
+                    df,
+                    pred_series,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=ml_defense_df,
+                    defensive_mode=ml_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=ml_defense_code.strip().upper(),
+                )
                 
                 # 평가 지표
                 mae = (actual_close - pred_series).abs().mean()
@@ -2436,7 +2233,29 @@ else:
                 
             # 변동성 돌파 모드 연산
             elif strategy_choice == "변동성 돌파 전략 (Larry Williams)":
-                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate, use_drip)
+                # [LOG: 20260608_1026] 변동성 돌파 전략 방어자산 데이터 로드 및 적용
+                vbt_defense_df = None
+                vbt_defense_code = "CASH"
+                if vbt_defensive_mode == "방어자산":
+                    vbt_defense_code = resolve_ticker_input(vbt_defense_ticker)
+                    vbt_defense_name = get_ticker_name(vbt_defense_code)
+                    with st.spinner(f"📡 방어 자산 {vbt_defense_name} ({vbt_defense_code}) 데이터를 불러오는 중..."):
+                        vbt_defense_df = load_data(start_date, end_date, vbt_defense_code)
+                    if vbt_defense_df is None or vbt_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+                vbt_df = run_vbt_backtest(
+                    df,
+                    K,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=vbt_defense_df,
+                    defensive_mode=vbt_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=vbt_defense_code.strip().upper(),
+                )
                 strategy_final_return = vbt_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = vbt_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = vbt_df['Strategy_Balance'].iloc[-1]
@@ -2446,7 +2265,30 @@ else:
                 
             # 이동평균선 골든크로스 연산
             elif strategy_choice == "이동평균선 골든크로스 전략":
-                ma_df = run_ma_cross_backtest(df, ma_short, ma_long, initial_budget, fee_rate, slippage_rate, use_drip)
+                # [LOG: 20260608_1027] 이동평균선 골든크로스 전략 방어자산 데이터 로드 및 적용
+                ma_defense_df = None
+                ma_defense_code = "CASH"
+                if ma_defensive_mode == "방어자산":
+                    ma_defense_code = resolve_ticker_input(ma_defense_ticker)
+                    ma_defense_name = get_ticker_name(ma_defense_code)
+                    with st.spinner(f"📡 방어 자산 {ma_defense_name} ({ma_defense_code}) 데이터를 불러오는 중..."):
+                        ma_defense_df = load_data(start_date, end_date, ma_defense_code)
+                    if ma_defense_df is None or ma_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+                ma_df = run_ma_cross_backtest(
+                    df,
+                    ma_short,
+                    ma_long,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=ma_defense_df,
+                    defensive_mode=ma_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=ma_defense_code.strip().upper(),
+                )
                 strategy_final_return = ma_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = ma_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = ma_df['Strategy_Balance'].iloc[-1]
@@ -2456,7 +2298,31 @@ else:
 
             # RSI 과매도 반등 연산
             elif strategy_choice == "RSI 과매도 반등 전략":
-                rsi_df = run_rsi_backtest(df, rsi_period, buy_rsi, sell_rsi, initial_budget, fee_rate, slippage_rate, use_drip)
+                # [LOG: 20260608_1028] RSI 과매도 반등 전략 방어자산 데이터 로드 및 적용
+                rsi_defense_df = None
+                rsi_defense_code = "CASH"
+                if rsi_defensive_mode == "방어자산":
+                    rsi_defense_code = resolve_ticker_input(rsi_defense_ticker)
+                    rsi_defense_name = get_ticker_name(rsi_defense_code)
+                    with st.spinner(f"📡 방어 자산 {rsi_defense_name} ({rsi_defense_code}) 데이터를 불러오는 중..."):
+                        rsi_defense_df = load_data(start_date, end_date, rsi_defense_code)
+                    if rsi_defense_df is None or rsi_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+                rsi_df = run_rsi_backtest(
+                    df,
+                    rsi_period,
+                    buy_rsi,
+                    sell_rsi,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=rsi_defense_df,
+                    defensive_mode=rsi_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=rsi_defense_code.strip().upper(),
+                )
                 strategy_final_return = rsi_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = rsi_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = rsi_df['Strategy_Balance'].iloc[-1]
@@ -2466,7 +2332,30 @@ else:
 
             # 볼린저 밴드 반등 연산
             elif strategy_choice == "볼린저 밴드 반등 전략":
-                bb_df = run_bollinger_backtest(df, bb_period, bb_std, initial_budget, fee_rate, slippage_rate, use_drip)
+                # [LOG: 20260608_1029] 볼린저 밴드 반등 전략 방어자산 데이터 로드 및 적용
+                bb_defense_df = None
+                bb_defense_code = "CASH"
+                if bb_defensive_mode == "방어자산":
+                    bb_defense_code = resolve_ticker_input(bb_defense_ticker)
+                    bb_defense_name = get_ticker_name(bb_defense_code)
+                    with st.spinner(f"📡 방어 자산 {bb_defense_name} ({bb_defense_code}) 데이터를 불러오는 중..."):
+                        bb_defense_df = load_data(start_date, end_date, bb_defense_code)
+                    if bb_defense_df is None or bb_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+                bb_df = run_bollinger_backtest(
+                    df,
+                    bb_period,
+                    bb_std,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=bb_defense_df,
+                    defensive_mode=bb_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=bb_defense_code.strip().upper(),
+                )
                 strategy_final_return = bb_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = bb_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = bb_df['Strategy_Balance'].iloc[-1]
@@ -2510,7 +2399,31 @@ else:
 
             # MACD 추세 연산
             elif strategy_choice == "MACD 추세 전략":
-                macd_df = run_macd_backtest(df, macd_fast, macd_slow, macd_signal, initial_budget, fee_rate, slippage_rate, use_drip)
+                # [LOG: 20260608_1030] MACD 추세 전략 방어자산 데이터 로드 및 적용
+                macd_defense_df = None
+                macd_defense_code = "CASH"
+                if macd_defensive_mode == "방어자산":
+                    macd_defense_code = resolve_ticker_input(macd_defense_ticker)
+                    macd_defense_name = get_ticker_name(macd_defense_code)
+                    with st.spinner(f"📡 방어 자산 {macd_defense_name} ({macd_defense_code}) 데이터를 불러오는 중..."):
+                        macd_defense_df = load_data(start_date, end_date, macd_defense_code)
+                    if macd_defense_df is None or macd_defense_df.empty:
+                        st.error("❌ 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+                macd_df = run_macd_backtest(
+                    df,
+                    macd_fast,
+                    macd_slow,
+                    macd_signal,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=macd_defense_df,
+                    defensive_mode=macd_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=macd_defense_code.strip().upper(),
+                )
                 strategy_final_return = macd_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = macd_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = macd_df['Strategy_Balance'].iloc[-1]
@@ -2690,8 +2603,42 @@ else:
                 X, y = prepare_features(df)
                 pred_series = run_rolling_forecast(X, y, window_size, _progress_container=progress_area)
                 
+                # [LOG: 20260608_1030] 통합 비교 모드에서의 ML/VBT 방어 자산 로드
+                ml_defense_df = None
+                ml_defense_code = "CASH"
+                if ml_defensive_mode == "방어자산":
+                    ml_defense_code = resolve_ticker_input(ml_defense_ticker)
+                    ml_defense_name = get_ticker_name(ml_defense_code)
+                    with st.spinner(f"📡 머신러닝 방어 자산 {ml_defense_name} ({ml_defense_code}) 데이터를 불러오는 중..."):
+                        ml_defense_df = load_data(start_date, end_date, ml_defense_code)
+                    if ml_defense_df is None or ml_defense_df.empty:
+                        st.error("❌ 머신러닝 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+
+                vbt_defense_df = None
+                vbt_defense_code = "CASH"
+                if vbt_defensive_mode == "방어자산":
+                    vbt_defense_code = resolve_ticker_input(vbt_defense_ticker)
+                    vbt_defense_name = get_ticker_name(vbt_defense_code)
+                    with st.spinner(f"📡 변동성돌파 방어 자산 {vbt_defense_name} ({vbt_defense_code}) 데이터를 불러오는 중..."):
+                        vbt_defense_df = load_data(start_date, end_date, vbt_defense_code)
+                    if vbt_defense_df is None or vbt_defense_df.empty:
+                        st.error("❌ 변동성돌파 방어 자산 데이터를 불러오지 못했습니다. 티커를 다시 확인해 주세요.")
+                        st.stop()
+
                 # 1. 머신러닝 예측 백테스트
-                ml_df_predicted = run_ml_backtest(df, pred_series, initial_budget, fee_rate, slippage_rate, use_drip)
+                ml_df_predicted = run_ml_backtest(
+                    df,
+                    pred_series,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=ml_defense_df,
+                    defensive_mode=ml_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=ml_defense_code.strip().upper(),
+                )
                 
                 # 2. 전체 기간 데이터프레임으로 확장 (앞쪽 학습 기간 90일 동안은 매매 없음/잔고 유지 처리)
                 ml_df = pd.DataFrame(index=df.index)
@@ -2725,7 +2672,18 @@ else:
                 ml_df['Hold_Balance'] = initial_budget * ml_df['Hold_Return'].cumprod()
                 
                 # 3. 변동성 돌파도 전체 기간으로 사용
-                vbt_df = run_vbt_backtest(df, K, initial_budget, fee_rate, slippage_rate, use_drip)
+                vbt_df = run_vbt_backtest(
+                    df,
+                    K,
+                    initial_budget,
+                    fee_rate,
+                    slippage_rate,
+                    use_drip,
+                    defense_df=vbt_defense_df,
+                    defensive_mode=vbt_defensive_mode,
+                    attack_label=ticker_symbol,
+                    defense_label=vbt_defense_code.strip().upper(),
+                )
                 actual_close = df['종가']
                 
                 ml_final_return = ml_df['Strategy_Cum_Return'].iloc[-1]
@@ -2809,6 +2767,17 @@ else:
                     line=dict(color="#ff7f0e", width=2, dash="dash"),
                     hovertemplate='<b>예측 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
                 ))
+                # [LOG: 20260608_1035] 머신러닝 전략 포지션 전환 마커 추가
+                position_markers = ml_df[ml_df['Position'] != ml_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['Actual_Close'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
+                ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
                     margin=dict(l=20, r=20, t=30, b=20),
@@ -2831,6 +2800,17 @@ else:
                     x=vbt_df.index, y=vbt_df['Buy_Target'], name="매수 목표가 (시가 + Range * K)", 
                     line=dict(color="#d62728", width=1.5, dash="dash"),
                     hovertemplate='<b>매수 목표가</b><br>날짜: %{x}<br>목표가: %{y:,.0f}원<extra></extra>'
+                ))
+                # [LOG: 20260608_1036] 변동성 돌파 전략 포지션 전환 마커 추가
+                position_markers = vbt_df[vbt_df['Position'] != vbt_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['종가'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
                 ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
@@ -2893,6 +2873,17 @@ else:
                     line=dict(color="#2ca02c", width=1.5),
                     hovertemplate='<b>장기 SMA</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
                 ))
+                # [LOG: 20260608_1037] 이동평균 크로스 전략 포지션 전환 마커 추가
+                position_markers = ma_df[ma_df['Position'] != ma_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['종가'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
+                ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
                     margin=dict(l=20, r=20, t=30, b=20),
@@ -2912,6 +2903,17 @@ else:
                     x=rsi_df.index, y=rsi_df['종가'], name="실제 종가", 
                     line=dict(color="#1f77b4", width=2),
                     hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                # [LOG: 20260608_1038] RSI 전략 포지션 전환 마커 추가
+                position_markers = rsi_df[rsi_df['Position'] != rsi_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['종가'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
                 ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
@@ -2964,6 +2966,17 @@ else:
                     line=dict(color="#d62728", width=1),
                     hovertemplate='<b>하단 밴드</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
                 ))
+                # [LOG: 20260608_1039] 볼린저 밴드 전략 포지션 전환 마커 추가
+                position_markers = bb_df[bb_df['Position'] != bb_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['종가'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
+                ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
                     margin=dict(l=20, r=20, t=30, b=20),
@@ -2981,6 +2994,17 @@ else:
                     x=macd_df.index, y=macd_df['종가'], name="실제 종가",
                     line=dict(color="#1f77b4", width=2),
                     hovertemplate='<b>실제 종가</b><br>날짜: %{x}<br>가격: %{y:,.0f}원<extra></extra>'
+                ))
+                # [LOG: 20260608_1040] MACD 전략 포지션 전환 마커 추가
+                position_markers = macd_df[macd_df['Position'] != macd_df['Position'].shift(1).fillna("CASH")]
+                fig_price.add_trace(go.Scatter(
+                    x=position_markers.index,
+                    y=position_markers['종가'],
+                    mode="markers",
+                    name="포지션 전환",
+                    marker=dict(color="#d62728", size=8, symbol="diamond"),
+                    customdata=position_markers['Selected_Asset'],
+                    hovertemplate='<b>포지션 전환</b><br>날짜: %{x}<br>선택: %{customdata}<extra></extra>'
                 ))
                 fig_price.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
