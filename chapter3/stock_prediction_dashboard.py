@@ -2651,6 +2651,9 @@ else:
                 if generic_df.empty:
                     st.error("❌ 포트폴리오 구성 자산의 공통 거래일 데이터가 부족합니다.")
                     st.stop()
+                # [LOG: 20260608_0920] 가격/신호 플롯과의 호환성을 위해 가상 필드 매핑
+                generic_df['종가'] = generic_df['Strategy_Balance']
+                generic_df['Buy_Signal'] = generic_df['Rebalance_Signal']
                 strategy_final_return = generic_df['Strategy_Cum_Return'].iloc[-1]
                 hold_final_return = generic_df['Hold_Cum_Return'].iloc[-1]
                 strategy_final_balance = generic_df['Strategy_Balance'].iloc[-1]
@@ -3103,7 +3106,7 @@ else:
                 )
                 st.plotly_chart(fig_dca, use_container_width=True)
 
-            elif strategy_choice in ["스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
+            elif strategy_choice in ["스토캐스틱 오실레이터 전략", "일목균형표 전환/기준선 전략", "ADX/DMI 추세 전략", "엔벨로프 반등 전략", "사용자 정의 정적 자산배분 전략", "영구 포트폴리오 전략", "올웨더 포트폴리오 전략"]:
                 st.subheader(f"{generic_label} 가격 및 신호")
                 fig_price = go.Figure()
                 fig_price.add_trace(go.Scatter(
