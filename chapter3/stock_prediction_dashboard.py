@@ -10,6 +10,16 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 from pathlib import Path
+import re
+
+# [LOG: 20260608_0905] Streamlit Community Cloud 모듈 캐싱으로 인한 ImportError 방지를 위한 강제 reload 처리
+import importlib
+try:
+    import backtest_engine
+    importlib.reload(backtest_engine)
+except Exception:
+    pass
+
 from backtest_engine import (
     calculate_dual_momentum_monthly_stats,
     calculate_macd_monthly_stats,
@@ -25,9 +35,6 @@ from backtest_engine import (
 
 # [LOG: 20260604_1357]
 # [LOG: 20260607_2234] 적립식 존버 물타기(DCA) 및 200일선+MACD 필터 전략 추가
-
-
-import re
 
 def validate_ticker_input(text, field_name="종목명"):
     if not text:
